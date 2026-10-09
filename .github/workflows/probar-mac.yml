@@ -1,0 +1,69 @@
+name: Probar CineSlide en Mac
+
+# Descarga el instalador del Release, lo INSTALA en un Mac real de GitHub (Apple Silicon e Intel) y comprueba:
+# la app y su icono, Python/PySide6/ffmpeg y que la actualización automática encuentra y verifica la versión publicada
+# y muestra el aviso "Actualización disponible".
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Versión a probar (vacío = la última)"
+        required: false
+  release:
+    types: [published]
+
+jobs:
+  mac:
+    name: Mac ${{ matrix.nombre }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-14, nombre: Silicon, arq: arm64 }
+          - { os: macos-15-intel, nombre: Intel, arq: x86_64 }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ github.event.release.tag_name || inputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Descargar el instalador
+        run: |
+          mkdir -p work && cd work
+          gh release download $TAG --repo "$GITHUB_REPOSITORY" --pattern "*Mac_${{ matrix.nombre }}.zip"
+          ls -la
+          unzip -q Instalar_CineSlide_v*_Mac_${{ matrix.nombre }}.zip
+          ls -la CineSlide*/
+      - name: Instalar (CINESLIDE_CI=1, sin ventanas)
+        run: |
+          cd work
+          CINESLIDE_CI=1 bash "$(ls -d CineSlide*/ | head -1)Instalar CineSlide.command"
+      - name: Comprobar app, icono, Python, PySide6 y ffmpeg
+        run: |
+          DIR="$HOME/Library/Application Support/CineSlide"
+          APP="$HOME/Applications/CineSlide.app"
+          echo "Versión instalada: $(cat "$DIR/version.txt")"
+          test -f "$DIR/CineSlide.py" && test -d "$APP" && test -x "$APP/Contents/MacOS/CineSlide"
+          plutil -lint "$APP/Contents/Info.plist"
+          plutil -p "$APP/Contents/Info.plist" | grep -E "CFBundleIconFile|CFBundleVersion"
+          ICNS="$APP/Contents/Resources/CineSlide.icns"
+          test -s "$ICNS"
+          mkdir -p "$RUNNER_TEMP/ic" && iconutil -c iconset "$ICNS" -o "$RUNNER_TEMP/ic/CineSlide.iconset"
+          ls "$RUNNER_TEMP/ic/CineSlide.iconset"
+          test "$(ls "$RUNNER_TEMP/ic/CineSlide.iconset" | wc -l)" -ge 8      # el icono trae sus tamaños (16 a 1024 px)
+          sips -g pixelWidth "$RUNNER_TEMP/ic/CineSlide.iconset/icon_512x512@2x.png" | grep 1024
+          codesign -v "$APP" && echo "firma de la app OK"
+          file "$DIR/python/bin/python3" "$DIR/ffmpeg/bin/ffmpeg"
+          file "$DIR/python/bin/python3" | grep -q "${{ matrix.arq }}"
+          QT_QPA_PLATFORM=offscreen "$DIR/python/bin/python3" -c "from PySide6 import QtCore, QtWidgets; print('PySide6 / Qt', QtCore.qVersion())"
+          "$DIR/ffmpeg/bin/ffmpeg" -hide_banner -version | head -1
+          test -f "$HOME/Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/Scripts/Utility/CineSlide.py"
+      - name: Actualización automática (descarga real + aviso de versión nueva)
+        run: |
+          DIR="$HOME/Library/Application Support/CineSlide"
+          QT_QPA_PLATFORM=offscreen "$DIR/python/bin/python3" -u probar_actualizacion.py "$DIR"
+      - name: Registros
+        if: always()
+        run: |
+          cat "$HOME/Library/Application Support/CineSlide/datos/logs/"instalador_mac_*.log 2>/dev/null | tail -80 || true
