@@ -38,7 +38,7 @@ def pregunta(self, titulo, texto, *a, **k):
 
 
 QtWidgets.QMessageBox.question = staticmethod(pregunta)
-ventana = Ventana(None, c._ProxyPrincipal())
+ventana = Ventana(c._ProxyPrincipal())
 ventana._act_ofrecer(info, True)
 assert visto.get("titulo") == "Actualización disponible", "no salió el aviso de versión nueva: %r" % visto
 assert ("v" + info["version"]) in visto["texto"], visto["texto"]
