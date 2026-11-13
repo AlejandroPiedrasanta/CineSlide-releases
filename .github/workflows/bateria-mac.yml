@@ -1,0 +1,83 @@
+name: Batería de pruebas en Mac
+
+# A mano (Actions > Batería de pruebas en Mac > Run workflow): instala el Release en Macs reales (Silicon e Intel), si se pide
+# pone encima el CineSlide.py de un BORRADOR de Release (para probar una versión sin publicarla: los borradores no los ve
+# nadie ni los baja la actualización automática) y corre bateria_mac.py: fotos de todo tipo (HEIC, EXIF, 48 MP...), videos
+# de iPhone (HEVC girado, HDR), los 8 temas, intro, textos, música, vertical, nombres raros, una presentación larga
+# (rendimiento), la vista previa y la interfaz. Cada video se abre con AVFoundation (QuickTime). Informe en el resumen.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release a instalar (vacío = la última)"
+        required: false
+      borrador:
+        description: "Tag de un borrador de Release con un CineSlide.py más nuevo (opcional)"
+        required: false
+      larga:
+        description: "Fotos de la presentación larga"
+        required: false
+        default: "30"
+
+permissions:
+  contents: write      # solo para poder leer los borradores de Release (no publica nada)
+
+jobs:
+  mac:
+    name: Batería ${{ matrix.nombre }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-15, nombre: Silicon }
+          - { os: macos-15-intel, nombre: Intel }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 100
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ inputs.tag }}
+      BORRADOR: ${{ inputs.borrador }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Descargar e instalar el Release
+        run: |
+          mkdir -p work && cd work
+          gh release download $TAG --repo "$GITHUB_REPOSITORY" --pattern "*Mac_${{ matrix.nombre }}.zip"
+          unzip -q Instalar_CineSlide_v*_Mac_${{ matrix.nombre }}.zip
+          CINESLIDE_CI=1 bash "$(ls -d CineSlide*/ | head -1)Instalar CineSlide.command" > instalacion.log 2>&1 || { tail -60 instalacion.log; exit 1; }
+          tail -3 instalacion.log
+      - name: Poner el CineSlide.py del borrador
+        if: ${{ inputs.borrador != '' }}
+        run: |
+          DIR="$HOME/Library/Application Support/CineSlide"
+          URL=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=50" --jq ".[] | select(.draft and .tag_name == \"$BORRADOR\") | .assets[] | select(.name == \"CineSlide.py\") | .url" | head -1)
+          test -n "$URL" || { echo "No hay un borrador '$BORRADOR' con CineSlide.py"; exit 1; }
+          gh api -H "Accept: application/octet-stream" "$URL" > "$RUNNER_TEMP/CineSlide.py"
+          python3 -c "import ast, sys; ast.parse(open(sys.argv[1], encoding='utf-8').read())" "$RUNNER_TEMP/CineSlide.py"
+          cp "$RUNNER_TEMP/CineSlide.py" "$DIR/CineSlide.py"
+          grep -m1 '^VERSION_MOTOR' "$DIR/CineSlide.py"
+      - name: Batería
+        run: |
+          DIR="$HOME/Library/Application Support/CineSlide"
+          xcrun swiftc -swift-version 5 -O verificar_av.swift -o "$RUNNER_TEMP/verificar_av"
+          QT_QPA_PLATFORM=offscreen "$DIR/python/bin/python3" -u bateria_mac.py "$DIR" "$RUNNER_TEMP/bateria" "$RUNNER_TEMP/verificar_av" --larga=${{ inputs.larga || '30' }}
+      - name: Resumen
+        if: always()
+        run: cat "$RUNNER_TEMP/bateria/informe.md" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "Sin informe" >> "$GITHUB_STEP_SUMMARY"
+      - name: Guardar el informe, la imagen de la interfaz y los videos
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: bateria-${{ matrix.nombre }}
+          path: |
+            ${{ runner.temp }}/bateria/informe.*
+            ${{ runner.temp }}/bateria/interfaz.png
+            ${{ runner.temp }}/bateria/*/*.mp4
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Registros
+        if: always()
+        run: |
+          ls -t "$HOME/Library/Application Support/CineSlide/datos/logs/"*.log 2>/dev/null | head -3 | while IFS= read -r f; do
+            echo "== $f"; tail -80 "$f"
+          done || true
