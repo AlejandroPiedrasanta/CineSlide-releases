@@ -1,8 +1,9 @@
 name: Probar CineSlide en Mac
 
 # Descarga el instalador del Release, lo INSTALA en un Mac real de GitHub (Apple Silicon e Intel) y comprueba:
-# la app y su icono, Python/PySide6/ffmpeg y que la actualización automática encuentra y verifica la versión publicada
-# y muestra el aviso "Actualización disponible".
+# la app y su icono, Python/PySide6/ffmpeg, que CREA un video (horizontal y vertical, con intro y música) que la Mac abre con
+# AVFoundation como QuickTime (todos los cuadros, el audio y el color), y que la actualización automática encuentra y
+# verifica la versión publicada y muestra el aviso "Actualización disponible". Los videos quedan en "Artifacts" de la ejecución.
 on:
   workflow_dispatch:
     inputs:
@@ -19,15 +20,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: macos-14, nombre: Silicon, arq: arm64 }
+          - { os: macos-15, nombre: Silicon, arq: arm64 }      # macos-14 retirado por GitHub el 2026-11-02
           - { os: macos-15-intel, nombre: Intel, arq: x86_64 }
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 40
+    timeout-minutes: 55          # la instalación tarda ~17 min en Intel; el video, unos minutos más
     env:
       GH_TOKEN: ${{ github.token }}
       TAG: ${{ github.event.release.tag_name || inputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Descargar el instalador
         run: |
           mkdir -p work && cd work
@@ -58,7 +59,20 @@ jobs:
           file "$DIR/python/bin/python3" | grep -q "${{ matrix.arq }}"
           QT_QPA_PLATFORM=offscreen "$DIR/python/bin/python3" -c "from PySide6 import QtCore, QtWidgets; print('PySide6 / Qt', QtCore.qVersion())"
           "$DIR/ffmpeg/bin/ffmpeg" -hide_banner -version | head -1
-          test -f "$HOME/Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/Scripts/Utility/CineSlide.py"
+          test ! -f "$HOME/Library/Application Support/Blackmagic Design/DaVinci Resolve/Fusion/Scripts/Utility/CineSlide.py"   # (9.30) sin lanzador de Resolve
+      - name: Crear un video y abrirlo con AVFoundation (como QuickTime)
+        run: |
+          DIR="$HOME/Library/Application Support/CineSlide"
+          xcrun swiftc -swift-version 5 -O verificar_av.swift -o "$RUNNER_TEMP/verificar_av"
+          QT_QPA_PLATFORM=offscreen "$DIR/python/bin/python3" -u probar_video_mac.py "$DIR" "$RUNNER_TEMP/videos" "$RUNNER_TEMP/verificar_av"
+      - name: Guardar los videos de prueba (para verlos en una Mac o un iPhone)
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: videos-mac-${{ matrix.nombre }}
+          path: ${{ runner.temp }}/videos/*.mp4
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Actualización automática (descarga real + aviso de versión nueva)
         run: |
           DIR="$HOME/Library/Application Support/CineSlide"
@@ -67,3 +81,6 @@ jobs:
         if: always()
         run: |
           cat "$HOME/Library/Application Support/CineSlide/datos/logs/"instalador_mac_*.log 2>/dev/null | tail -80 || true
+          ls -t "$HOME/Library/Application Support/CineSlide/datos/logs/"*.log 2>/dev/null | grep -v instalador_mac_ | head -2 | while IFS= read -r f; do
+            echo "== $f"; tail -60 "$f"
+          done || true
