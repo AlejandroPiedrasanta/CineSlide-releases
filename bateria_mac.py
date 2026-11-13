@@ -470,20 +470,27 @@ if not SOLO or "interfaz" in SOLO:
     print("\n" + "=" * 100 + "\n## interfaz (ventana principal sin pantalla)")
     t0 = time.time()
     res = {"escenario": "interfaz", "archivos": 0, "formato": "-", "ok": False, "fallas": []}
-    try:
-        from PySide6 import QtWidgets
+    try:                                   # como la app real: QEventLoop hasta 'cerrada'; se cierra como con el botón
+        from PySide6 import QtCore, QtWidgets
         app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(["CineSlide"])
         Ventana = c._crear_clases_qt()
         ventana = Ventana(c._ProxyPrincipal())
         ventana.resize(1400, 900)
+        bucle = QtCore.QEventLoop()
+        ventana.cerrada.connect(bucle.quit)
         ventana.show()
-        for _ in range(20):
-            app.processEvents()
-            time.sleep(0.05)
+        app.processEvents()
         res["abrir_s"] = round(time.time() - t0, 2)
-        ventana.grab().save(os.path.join(SALIDA, "interfaz.png"))
-        res["ok"] = True
-        ventana.hide()
+
+        def capturar_y_cerrar():
+            ventana.grab().save(os.path.join(SALIDA, "interfaz.png"))
+            ventana.close()
+        QtCore.QTimer.singleShot(1500, capturar_y_cerrar)
+        QtCore.QTimer.singleShot(30000, bucle.quit)                     # por si no se cerrara
+        bucle.exec()
+        res["ok"] = os.path.isfile(os.path.join(SALIDA, "interfaz.png"))
+        if not res["ok"]:
+            res["fallas"].append("la ventana no se pudo dibujar ni cerrar")
     except Exception as e:
         traceback.print_exc()
         res["fallas"].append("%s: %s" % (type(e).__name__, str(e)[:300]))
@@ -494,4 +501,11 @@ if not SOLO or "interfaz" in SOLO:
 texto = informe(INFO, time.time() - T_INICIO)
 print("\n" + texto)
 sys.stdout.flush()
-os._exit(0 if all(r["ok"] for r in RESULTADOS) else 1)
+CODIGO = 0 if all(r["ok"] for r in RESULTADOS) else 1
+# Salida normal (como la app): os._exit con Qt abierto se caía en Windows al descargar Qt (0xC0000005). El vigía corta
+# solo si algún hilo del motor no dejara terminar.
+import threading  # noqa: E402
+_vigia = threading.Timer(60, os._exit, args=(CODIGO,))
+_vigia.daemon = True
+_vigia.start()
+sys.exit(CODIGO)
