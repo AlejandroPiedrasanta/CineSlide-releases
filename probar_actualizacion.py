@@ -30,17 +30,29 @@ from PySide6 import QtWidgets  # noqa: E402
 app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(["CineSlide"])
 Ventana = c._crear_clases_qt()
 visto = {}
-
-
-def pregunta(self, titulo, texto, *a, **k):
-    visto["titulo"], visto["texto"] = titulo, texto
-    return QtWidgets.QMessageBox.StandardButton.No          # el usuario pulsa "No": no instala nada
-
-
-QtWidgets.QMessageBox.question = staticmethod(pregunta)
 ventana = Ventana(c._ProxyPrincipal())
-ventana._act_ofrecer(info, True)
-assert visto.get("titulo") == "Actualización disponible", "no salió el aviso de versión nueva: %r" % visto
+if hasattr(ventana, "_act_mostrar_dialogo"):                # (9.56) ventana de actualización propia (firma, notas, descarga)
+    def mostrar(info_, modo):
+        visto["titulo"], visto["texto"] = modo, "v%s %s" % (info_["version"], info_.get("notas") or "")
+        return "luego"                                       # el usuario pulsa "Más tarde": no instala nada
+    ventana._act_mostrar_dialogo = mostrar
+    ventana._act_ofrecer(info, True)
+    assert visto.get("titulo") == "nueva", "no salió el aviso de versión nueva: %r" % visto
+else:                                                        # 9.23-9.55: QMessageBox "Actualización disponible"
+    def pregunta(self, titulo, texto, *a, **k):
+        visto["titulo"], visto["texto"] = titulo, texto
+        return QtWidgets.QMessageBox.StandardButton.No
+    QtWidgets.QMessageBox.question = staticmethod(pregunta)
+    ventana._act_ofrecer(info, True)
+    assert visto.get("titulo") == "Actualización disponible", "no salió el aviso de versión nueva: %r" % visto
 assert ("v" + info["version"]) in visto["texto"], visto["texto"]
 print("AVISO OK ->", visto["titulo"], "|", visto["texto"].splitlines()[0])
-os._exit(0)
+sys.stdout.flush()
+# se cierra como la app (os._exit con la ventana de Qt abierta se cae en Windows al descargar Qt); el vigía, por si algo no deja salir
+import threading  # noqa: E402
+_vigia = threading.Timer(30, os._exit, args=(0,))
+_vigia.daemon = True
+_vigia.start()
+ventana.close()
+app.processEvents()
+sys.exit(0)
