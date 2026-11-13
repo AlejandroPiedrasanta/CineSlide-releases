@@ -1,10 +1,11 @@
 name: Batería de pruebas en Mac
 
-# A mano (Actions > Batería de pruebas en Mac > Run workflow): instala el Release en Macs reales (Silicon e Intel), si se pide
-# pone encima el CineSlide.py de un BORRADOR de Release (para probar una versión sin publicarla: los borradores no los ve
-# nadie ni los baja la actualización automática) y corre bateria_mac.py: fotos de todo tipo (HEIC, EXIF, 48 MP...), videos
-# de iPhone (HEVC girado, HDR), los 8 temas, intro, textos, música, vertical, nombres raros, una presentación larga
-# (rendimiento), la vista previa y la interfaz. Cada video se abre con AVFoundation (QuickTime). Informe en el resumen.
+# A mano (Actions > Batería de pruebas en Mac > Run workflow): instala el Release en 4 Macs reales (macOS 26 y 15, Apple Silicon e
+# Intel), si se pide pone encima el CineSlide.py de un BORRADOR de Release (para probar una versión sin publicarla: los borradores
+# no los ve nadie ni los baja la actualización automática) y corre bateria_mac.py: fotos de todo tipo (HEIC, EXIF, 48 MP, PNG de
+# 16 bits, progresivas, dañadas...), videos de iPhone (HEVC girado, HDR), los 8 temas, 24/30/60 fps, 4K, H.264, "Los dos", intro,
+# textos, música (una o varias), vertical, nombres raros y rutas largas, muchas fotos, una larga (rendimiento), la vista previa y
+# la interfaz. Cada video se decodifica entero y se abre con AVFoundation (QuickTime). Informe en el resumen de la ejecución.
 on:
   workflow_dispatch:
     inputs:
@@ -14,10 +15,17 @@ on:
       borrador:
         description: "Tag de un borrador de Release con un CineSlide.py más nuevo (opcional)"
         required: false
+      solo:
+        description: "Escenarios separados por comas (vacío = todos)"
+        required: false
       larga:
         description: "Fotos de la presentación larga"
         required: false
         default: "30"
+      muchas:
+        description: "Fotos del escenario 'muchas'"
+        required: false
+        default: "60"
 
 permissions:
   contents: write      # solo para poder leer los borradores de Release (no publica nada)
@@ -29,21 +37,25 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { os: macos-15, nombre: Silicon }
-          - { os: macos-15-intel, nombre: Intel }
+          - { os: macos-26, nombre: macOS26-Silicon, zip: Silicon }
+          - { os: macos-26-intel, nombre: macOS26-Intel, zip: Intel }
+          - { os: macos-15, nombre: macOS15-Silicon, zip: Silicon }
+          - { os: macos-15-intel, nombre: macOS15-Intel, zip: Intel }
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 100
+    timeout-minutes: 150
     env:
       GH_TOKEN: ${{ github.token }}
       TAG: ${{ inputs.tag }}
       BORRADOR: ${{ inputs.borrador }}
+      SOLO: ${{ inputs.solo }}
     steps:
       - uses: actions/checkout@v7
       - name: Descargar e instalar el Release
         run: |
+          sw_vers
           mkdir -p work && cd work
-          gh release download $TAG --repo "$GITHUB_REPOSITORY" --pattern "*Mac_${{ matrix.nombre }}.zip"
-          unzip -q Instalar_CineSlide_v*_Mac_${{ matrix.nombre }}.zip
+          gh release download $TAG --repo "$GITHUB_REPOSITORY" --pattern "*Mac_${{ matrix.zip }}.zip"
+          unzip -q Instalar_CineSlide_v*_Mac_${{ matrix.zip }}.zip
           CINESLIDE_CI=1 bash "$(ls -d CineSlide*/ | head -1)Instalar CineSlide.command" > instalacion.log 2>&1 || { tail -60 instalacion.log; exit 1; }
           tail -3 instalacion.log
       - name: Poner el CineSlide.py del borrador
@@ -60,7 +72,10 @@ jobs:
         run: |
           DIR="$HOME/Library/Application Support/CineSlide"
           xcrun swiftc -swift-version 5 -O verificar_av.swift -o "$RUNNER_TEMP/verificar_av"
-          QT_QPA_PLATFORM=offscreen "$DIR/python/bin/python3" -u bateria_mac.py "$DIR" "$RUNNER_TEMP/bateria" "$RUNNER_TEMP/verificar_av" --larga=${{ inputs.larga || '30' }}
+          EXTRA=()
+          [ -n "$SOLO" ] && EXTRA+=("--solo=$SOLO")
+          QT_QPA_PLATFORM=offscreen "$DIR/python/bin/python3" -u bateria_mac.py "$DIR" "$RUNNER_TEMP/bateria" "$RUNNER_TEMP/verificar_av" \
+            --larga=${{ inputs.larga || '30' }} --muchas=${{ inputs.muchas || '60' }} --precalentar "${EXTRA[@]}"
       - name: Resumen
         if: always()
         run: cat "$RUNNER_TEMP/bateria/informe.md" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "Sin informe" >> "$GITHUB_STEP_SUMMARY"

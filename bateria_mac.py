@@ -38,6 +38,7 @@ OPC = dict((a[2:].split("=", 1) + ["1"])[:2] for a in sys.argv[1:] if a.startswi
 CARPETA, SALIDA = os.path.abspath(ARGS[0]), os.path.abspath(ARGS[1])
 VERIFICAR_AV = os.path.abspath(ARGS[2]) if len(ARGS) > 2 else None
 N_LARGA = int(OPC.get("larga", "30"))
+N_MUCHAS = int(OPC.get("muchas", "60"))
 SOLO = set(x for x in OPC.get("solo", "").split(",") if x)
 os.makedirs(SALIDA, exist_ok=True)
 sys.path.insert(0, CARPETA)
@@ -133,6 +134,27 @@ def video(destino, fuente, segundos, args_video, rotacion=None):
     return destino
 
 
+def audio_m4a(destino, segundos, hz=550):
+    """Canción corta en M4A (AAC), como las que se compran o bajan del teléfono."""
+    correr([FF, "-v", "error", "-y", "-f", "lavfi", "-i", "sine=frequency=%d:duration=%d,volume=0.4" % (hz, segundos), "-ac", "2",
+            "-c:a", "aac", destino], check=True)
+    return destino
+
+
+def jpeg_progresivo(origen, destino):
+    """JPEG progresivo (así guardan muchas webs y algunos programas): lo escribe Qt, que sí sabe hacerlo."""
+    try:
+        from PySide6.QtGui import QImage, QImageWriter
+        img = QImage(origen)
+        w = QImageWriter(destino, b"jpg")
+        w.setProgressiveScanWrite(True)
+        w.setQuality(88)
+        return destino if (not img.isNull() and w.write(img)) else None
+    except Exception as e:
+        print("  (no se pudo crear el JPEG progresivo: %s)" % e)
+        return None
+
+
 def cancion(destino, segundos):
     """Canción de prueba (MP3 si este ffmpeg tiene LAME; si no, M4A)."""
     fuente = "sine=frequency=440:duration=%d,volume=0.4" % segundos
@@ -212,6 +234,9 @@ def revisar_mp4(ruta, vertical, con_audio, ancho_alto):
     if sa:
         da = float(sa.get("duration") or 0)
         r.append((abs(dv - da) < 0.2 and sa.get("codec_name") == "aac", "audio %s de %.1f s" % (sa.get("codec_name"), da), False))
+    # se decodifica TODO (video y audio): cualquier error de flujo sale aquí, en todos los sistemas
+    errores = correr([FF, "-v", "error", "-i", ruta, "-map", "0", "-f", "null", "-"]).stderr.decode("utf-8", "replace").strip()
+    r.append((not errores, "ffmpeg lo decodifica completo sin errores%s" % ((": " + errores.splitlines()[0][:160]) if errores else ""), False))
     if VERIFICAR_AV and sv:
         r += revisar_en_mac(ruta, sv, dv, float(sa.get("duration") or 0) if sa else 0.0)
     return r, dv
@@ -285,8 +310,6 @@ def tiempos(registro, etapas):
 
 # ------------------------------------------------------------------------------------------------ correr un escenario
 def escenario(nombre, items, cambios, W=1920, H=1080, musica=None, nombre_video=None, con_audio=None, esperar_todo=True):
-    if SOLO and nombre not in SOLO:
-        return None
     print("\n" + "=" * 100 + "\n## %s: %d archivos, %dx%d%s" % (nombre, len(items), W, H, " + música" if musica else ""))
     v = dict(BASE)
     v.update({"formato_video": VERTICAL if H > W else HORIZONTAL, "express_resolucion": "%dp" % min(W, H),
@@ -389,6 +412,23 @@ POZO = fotos_camara(MAT, 1, 8)
 MP3 = cancion(os.path.join(MAT, "cancion.mp3"), 40)
 CORTOS = {"t_segundos_por_foto": 2.0, "t1_segundos_por_foto": 2.0}
 
+if "precalentar" in OPC:      # como recién instalado: caché de plantillas vacía + lo que prepara el instalador (y cuánto tarda)
+    print("\n" + "=" * 100 + "\n## precalentar (paso 7/7 del instalador, con la caché de plantillas vacía)")
+    _plantillas = carpeta("plantillas_nuevas")
+    c._ex_carpeta_plantillas = lambda: _plantillas
+    t0 = time.time()
+    res = {"escenario": "precalentar", "archivos": 0, "formato": str(getattr(c, "PRECALENTAR_FORMATOS", "5 formatos")), "ok": False,
+           "fallas": []}
+    try:
+        res["archivos"] = c.precalentar_express(imprimir=lambda *a: None)
+        res["ok"] = True
+    except Exception as e:
+        traceback.print_exc()
+        res["fallas"].append("%s: %s" % (type(e).__name__, str(e)[:300]))
+    res["segundos"] = round(time.time() - t0, 1)
+    print("  %s: %d plantillas en %.1f s %s" % ("OK" if res["ok"] else "FALLA", res["archivos"], res["segundos"], res["fallas"]))
+    RESULTADOS.append(res)
+
 if not SOLO or "fotos" in SOLO:
     d = carpeta("material_fotos")
     variadas = [con_orientacion(fotos_camara(d, 50, 1, prefijo="girada_exif")[0], 6)]
@@ -449,6 +489,70 @@ if not SOLO or "larga" in SOLO:
     d = carpeta("material_larga")
     escenario("larga", [(f, False) for f in fotos_camara(d, 1000, N_LARGA)],
               {"t_segundos_por_foto": 3.0, "t1_segundos_por_foto": 3.0}, musica={"ruta": MP3, "lista": [MP3]})
+
+if not SOLO or "fps" in SOLO:                         # (9.55) 24 y 60 fps ya no se preparan al instalar: se arman al usarlas
+    for txt_fps in ("60", "24"):
+        escenario("fps_" + txt_fps, [(f, False) for f in POZO[:4]], dict(CORTOS, express_fps=txt_fps), 1280, 720)
+
+if not SOLO or "los_dos" in SOLO:                     # "Los dos (horizontal y vertical)": dos MP4 seguidos, como CREAR VIDEO
+    v_dos = dict(CORTOS, formato_video=c.FORMATOS_VIDEO[2])
+    for W_, H_, suf in c.formatos_de_video(v_dos):
+        escenario("los_dos" + (suf or "_horizontal"), [(f, False) for f in POZO[:3]], dict(v_dos), W_, H_,
+                  nombre_video="Presentacion" + suf)
+
+if not SOLO or "h264" in SOLO:
+    escenario("h264", [(f, False) for f in POZO[:3]], dict(CORTOS, codec_exportacion="H.264"))
+
+if not SOLO or "danadas" in SOLO:                     # una cortada, una que no es foto y una vacía: se saltan, el video sale
+    d = carpeta("material_danadas")
+    cortada, falsa, vacia = (os.path.join(d, n) for n in ("cortada.jpg", "no_es_una_foto.jpg", "vacia.jpg"))
+    with open(POZO[1], "rb") as fo, open(cortada, "wb") as fd:
+        fd.write(fo.read()[:30000])
+    with open(falsa, "w", encoding="utf-8") as fd:
+        fd.write("esto no es una foto")
+    open(vacia, "wb").close()
+    res = escenario("danadas", [(POZO[0], False), (cortada, False), (falsa, False), (vacia, False), (POZO[2], False)], CORTOS,
+                    esperar_todo=False)
+    if res and res.get("ok") and not {"no_es_una_foto.jpg", "vacia.jpg"} <= set(res.get("omitidos") or []):
+        print("  AVISO el motor no listó como omitidas la foto falsa y la vacía: %s" % res.get("omitidos"))
+
+if not SOLO or "musica" in SOLO:                      # dos canciones más cortas que el video: se encadenan y se repiten
+    a1 = audio_m4a(os.path.join(MAT, "cancion_a.m4a"), 6, 440)
+    a2 = cancion(os.path.join(MAT, "cancion_b.mp3"), 5)
+    escenario("musica_lista", [(f, False) for f in POZO[:8]], CORTOS,
+              musica={"ruta": a1, "lista": [a1, a2], "repetir": True, "fundido_entrada": 1.0, "fundido_salida": 2.0})
+
+if not SOLO or "formatos2" in SOLO:                   # PNG de 16 bits y JPEG progresivo
+    d = carpeta("material_formatos2")
+    extra = [imagen(os.path.join(d, "foto_16bits.png"), "testsrc2=s=1600x1200,format=rgb48be", "-pix_fmt", "rgb48be"),
+             jpeg_progresivo(POZO[3], os.path.join(d, "progresiva.jpg")), POZO[4]]
+    escenario("formatos2", [(x, False) for x in extra if x], CORTOS)
+
+if not SOLO or "ruta_larga" in SOLO:                  # más de 260 caracteres (el límite clásico de Windows)
+    d = carpeta("ruta_larga")
+    while len(d) < 300:
+        d = os.path.join(d, "Fotos del evento de la familia")
+    try:
+        os.makedirs(d, exist_ok=True)
+        largas = []
+        for i in range(3):
+            destino = os.path.join(d, "foto de la ceremonia y la fiesta número %d.jpg" % (i + 1))
+            with open(POZO[i], "rb") as fo, open(destino, "wb") as fd:
+                fd.write(fo.read())
+            largas.append((destino, False))
+        print("  (ruta de %d caracteres)" % len(largas[0][0]))
+        escenario("ruta_larga", largas, CORTOS)
+    except OSError as e:
+        print("  (este sistema no permite rutas tan largas: %s; no cuenta como falla de CineSlide)" % e)
+
+if not SOLO or "4k" in SOLO:
+    escenario("4k", [(f, False) for f in POZO[:2]], CORTOS, 3840, 2160)
+
+if not SOLO or "muchas" in SOLO:                      # muchas fotos (estabilidad y memoria)
+    d = carpeta("material_muchas")
+    muchas = [imagen(os.path.join(d, "m_%03d.jpg" % i), "gradients=s=1600x1200:seed=%d" % (3000 + i), "-q:v", "4")
+              for i in range(N_MUCHAS)]
+    escenario("muchas", [(f, False) for f in muchas if f], CORTOS, 1280, 720)
 
 if not SOLO or "vista" in SOLO:
     print("\n" + "=" * 100 + "\n## vista (vista previa de un tema, la usa la interfaz)")

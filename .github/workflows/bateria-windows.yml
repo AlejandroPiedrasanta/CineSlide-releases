@@ -1,0 +1,107 @@
+name: Batería de pruebas en Windows
+
+# A mano (Actions > Batería de pruebas en Windows > Run workflow): el MISMO motor y la misma batería (bateria_mac.py) en Windows de
+# GitHub: Server 2025, Server 2022 y Windows 11 ARM (Python x64 emulado, como lo que instala el instalador). Sin instalador:
+# Python + PySide6 + el ffmpeg 9.0.2 que lleva el instalador, y el CineSlide.py del Release o de un borrador privado. Estas
+# máquinas no tienen GPU: prueban el camino por CPU (x264/x265 y composición con ffmpeg), el de las PC sin NVIDIA.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release del que tomar CineSlide.py (vacío = la última)"
+        required: false
+      borrador:
+        description: "Tag de un borrador de Release con un CineSlide.py más nuevo (opcional)"
+        required: false
+      solo:
+        description: "Escenarios separados por comas (vacío = todos)"
+        required: false
+      larga:
+        description: "Fotos de la presentación larga"
+        required: false
+        default: "30"
+      muchas:
+        description: "Fotos del escenario 'muchas'"
+        required: false
+        default: "60"
+
+permissions:
+  contents: write      # solo para poder leer los borradores de Release (no publica nada)
+
+jobs:
+  windows:
+    name: Batería ${{ matrix.nombre }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-2025, nombre: Windows-Server-2025 }
+          - { os: windows-2022, nombre: Windows-Server-2022 }
+          - { os: windows-11-arm, nombre: Windows-11-ARM }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 150
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TAG: ${{ inputs.tag }}
+      BORRADOR: ${{ inputs.borrador }}
+      SOLO: ${{ inputs.solo }}
+      PYTHONUTF8: "1"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+          architecture: x64
+      - name: PySide6 y ffmpeg 9.0.2 (los mismos que el instalador)
+        shell: pwsh
+        run: |
+          [Environment]::OSVersion.VersionString
+          python -m pip install --disable-pip-version-check -q pyside6-essentials
+          python -c "import platform; from PySide6 import QtCore; print('Python', platform.python_version(), platform.machine(), '| Qt', QtCore.qVersion())"
+          $zip = Join-Path $env:RUNNER_TEMP "ffmpeg.zip"
+          Invoke-WebRequest "https://github.com/GyanD/codexffmpeg/releases/download/9.0.2/ffmpeg-9.0.2-essentials_build.zip" -OutFile $zip
+          Expand-Archive $zip -DestinationPath (Join-Path $env:RUNNER_TEMP "ffmpeg")
+          $bin = (Get-ChildItem (Join-Path $env:RUNNER_TEMP "ffmpeg") -Recurse -Filter ffmpeg.exe | Select-Object -First 1).DirectoryName
+          $bin | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          & (Join-Path $bin "ffmpeg.exe") -hide_banner -version | Select-Object -First 1
+      - name: CineSlide.py (del Release o del borrador)
+        shell: bash
+        run: |
+          DIR="$RUNNER_TEMP/cineslide"; mkdir -p "$DIR"
+          if [ -n "$BORRADOR" ]; then
+            URL=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=50" --jq ".[] | select(.draft and .tag_name == \"$BORRADOR\") | .assets[] | select(.name == \"CineSlide.py\") | .url" | head -1)
+            test -n "$URL" || { echo "No hay un borrador '$BORRADOR' con CineSlide.py"; exit 1; }
+            gh api -H "Accept: application/octet-stream" "$URL" > "$DIR/CineSlide.py"
+          else
+            gh release download $TAG --repo "$GITHUB_REPOSITORY" --pattern CineSlide.py --dir "$DIR"
+          fi
+          python -c "import ast, sys; ast.parse(open(sys.argv[1], encoding='utf-8').read())" "$DIR/CineSlide.py"
+          grep -m1 '^VERSION_MOTOR' "$DIR/CineSlide.py"
+      - name: Batería
+        shell: bash
+        run: |
+          export CINESLIDE_DATOS="$RUNNER_TEMP/datos"
+          EXTRA=()
+          [ -n "$SOLO" ] && EXTRA+=("--solo=$SOLO")
+          python -u bateria_mac.py "$RUNNER_TEMP/cineslide" "$RUNNER_TEMP/bateria" --larga=${{ inputs.larga || '30' }} \
+            --muchas=${{ inputs.muchas || '60' }} --precalentar "${EXTRA[@]}"
+      - name: Resumen
+        if: always()
+        shell: bash
+        run: cat "$RUNNER_TEMP/bateria/informe.md" >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "Sin informe" >> "$GITHUB_STEP_SUMMARY"
+      - name: Guardar el informe, la imagen de la interfaz y los videos
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: bateria-${{ matrix.nombre }}
+          path: |
+            ${{ runner.temp }}/bateria/informe.*
+            ${{ runner.temp }}/bateria/interfaz.png
+            ${{ runner.temp }}/bateria/*/*.mp4
+          if-no-files-found: warn
+          retention-days: 7
+      - name: Registros
+        if: always()
+        shell: bash
+        run: |
+          ls -t "$RUNNER_TEMP/datos/logs/"*.log 2>/dev/null | head -3 | while IFS= read -r f; do echo "== $f"; tail -80 "$f"; done || true
