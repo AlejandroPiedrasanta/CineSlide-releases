@@ -32,7 +32,15 @@ jobs:
       - name: Descargar el instalador
         run: |
           mkdir -p work && cd work
-          gh release download $TAG --repo "$GITHUB_REPOSITORY" --pattern "*Mac_${{ matrix.nombre }}.zip"
+          if ! gh release download $TAG --repo "$GITHUB_REPOSITORY" --pattern "*Mac_${{ matrix.nombre }}.zip" 2>/dev/null; then
+            # (9.56) Release con solo CineSlide.py (sin instaladores): el instalador del último Release que lo tenga + este CineSlide.py
+            gh release download $TAG --repo "$GITHUB_REPOSITORY" --pattern CineSlide.py --output CineSlide_release.py
+            for t in $(gh release list --repo "$GITHUB_REPOSITORY" --limit 30 --exclude-drafts --exclude-pre-releases --json tagName --jq '.[].tagName'); do
+              if gh release download "$t" --repo "$GITHUB_REPOSITORY" --pattern "*Mac_${{ matrix.nombre }}.zip" 2>/dev/null; then
+                echo "Instalador de $t + CineSlide.py de ${TAG:-el último Release}"; break
+              fi
+            done
+          fi
           ls -la
           unzip -q Instalar_CineSlide_v*_Mac_${{ matrix.nombre }}.zip
           ls -la CineSlide*/
@@ -40,6 +48,14 @@ jobs:
         run: |
           cd work
           CINESLIDE_CI=1 bash "$(ls -d CineSlide*/ | head -1)Instalar CineSlide.command"
+      - name: Poner el CineSlide.py del Release (si vino sin instaladores)
+        run: |
+          if [ -f work/CineSlide_release.py ]; then
+            cp work/CineSlide_release.py "$HOME/Library/Application Support/CineSlide/CineSlide.py"
+            grep -m1 '^VERSION_MOTOR' "$HOME/Library/Application Support/CineSlide/CineSlide.py"
+          else
+            echo "El Release trae su instalador de Mac: se prueba tal cual."
+          fi
       - name: Comprobar app, icono, Python, PySide6 y ffmpeg
         run: |
           DIR="$HOME/Library/Application Support/CineSlide"
