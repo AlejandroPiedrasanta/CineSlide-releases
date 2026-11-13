@@ -70,6 +70,37 @@ BASE = dict((x["id"], x["default"]) for x in MAN)
 TEMAS = [x for x in MAN if x["id"] == "estilo_diseno"][0]["choices"]
 HORIZONTAL, VERTICAL = c.FORMATOS_VIDEO[0], c.FORMATOS_VIDEO[1]
 RESULTADOS = []
+ESTADO = {"escenario": None, "desde": 0.0}
+LIMITE_MIN = float(OPC.get("limite", "25"))          # un escenario que pase de esto se da por colgado (y se corta la batería)
+
+
+def empezar(nombre):
+    ESTADO.update(escenario=nombre, desde=time.time())
+
+
+def anotar(res):
+    """Guarda el resultado y reescribe el informe YA: si algo se cuelga después, lo hecho no se pierde."""
+    ESTADO.update(escenario=None)
+    RESULTADOS.append(res)
+    try:
+        informe(INFO, time.time() - T_INICIO)
+    except Exception as e:
+        print("  (no se pudo escribir el informe: %s)" % e)
+
+
+def _vigia_escenarios():
+    import threading
+    def mirar():
+        while True:
+            time.sleep(10)
+            nombre, desde = ESTADO["escenario"], ESTADO["desde"]
+            if nombre and time.time() - desde > LIMITE_MIN * 60:
+                anotar({"escenario": nombre, "archivos": 0, "formato": "-", "ok": False, "segundos": round(time.time() - desde, 1),
+                        "fallas": ["se colgó: más de %.0f min sin terminar" % LIMITE_MIN]})
+                print("\nFALLA: '%s' se colgó (más de %.0f min); se corta la batería." % (nombre, LIMITE_MIN))
+                sys.stdout.flush()
+                os._exit(1)
+    threading.Thread(target=mirar, daemon=True).start()
 
 
 def correr(orden, **k):
@@ -310,6 +341,7 @@ def tiempos(registro, etapas):
 
 # ------------------------------------------------------------------------------------------------ correr un escenario
 def escenario(nombre, items, cambios, W=1920, H=1080, musica=None, nombre_video=None, con_audio=None, esperar_todo=True):
+    empezar(nombre)
     print("\n" + "=" * 100 + "\n## %s: %d archivos, %dx%d%s" % (nombre, len(items), W, H, " + música" if musica else ""))
     v = dict(BASE)
     v.update({"formato_video": VERTICAL if H > W else HORIZONTAL, "express_resolucion": "%dp" % min(W, H),
@@ -327,7 +359,7 @@ def escenario(nombre, items, cambios, W=1920, H=1080, musica=None, nombre_video=
         res.update(segundos=round(time.time() - t0, 1), error="%s: %s" % (type(e).__name__, str(e)[:400]))
         res["fallas"].append(res["error"])
         res["avisos_motor"] = [m for n, m in REGISTRO if n in ("WARN", "WARNING", "ERROR")][:12]
-        RESULTADOS.append(res)
+        anotar(res)
         print("  FALLA %s" % res["error"])
         return res
     res["segundos"] = round(time.time() - t0, 1)
@@ -355,7 +387,7 @@ def escenario(nombre, items, cambios, W=1920, H=1080, musica=None, nombre_video=
         print("  aviso del motor: " + a[:200])
     res["ok"] = not res["fallas"]
     print("  %s en %.1f s (%.1f s de video; %s)" % (res["video"], res["segundos"], dv, json.dumps(res["tiempos"], ensure_ascii=False)))
-    RESULTADOS.append(res)
+    anotar(res)
     return res
 
 
@@ -406,6 +438,7 @@ def informe(info, total_s):
 # ------------------------------------------------------------------------------------------------ escenarios
 T_INICIO = time.time()
 INFO = sistema()
+_vigia_escenarios()
 print("CineSlide %s | %s | %s" % (c.VERSION_MOTOR, INFO["so"], INFO.get("cpu")))
 MAT = carpeta("material")
 POZO = fotos_camara(MAT, 1, 8)
@@ -416,6 +449,7 @@ if "precalentar" in OPC:      # como recién instalado: caché de plantillas vac
     print("\n" + "=" * 100 + "\n## precalentar (paso 7/7 del instalador, con la caché de plantillas vacía)")
     _plantillas = carpeta("plantillas_nuevas")
     c._ex_carpeta_plantillas = lambda: _plantillas
+    empezar("precalentar")
     t0 = time.time()
     res = {"escenario": "precalentar", "archivos": 0, "formato": str(getattr(c, "PRECALENTAR_FORMATOS", "5 formatos")), "ok": False,
            "fallas": []}
@@ -427,7 +461,7 @@ if "precalentar" in OPC:      # como recién instalado: caché de plantillas vac
         res["fallas"].append("%s: %s" % (type(e).__name__, str(e)[:300]))
     res["segundos"] = round(time.time() - t0, 1)
     print("  %s: %d plantillas en %.1f s %s" % ("OK" if res["ok"] else "FALLA", res["archivos"], res["segundos"], res["fallas"]))
-    RESULTADOS.append(res)
+    anotar(res)
 
 if not SOLO or "fotos" in SOLO:
     d = carpeta("material_fotos")
@@ -556,6 +590,7 @@ if not SOLO or "muchas" in SOLO:                      # muchas fotos (estabilida
 
 if not SOLO or "vista" in SOLO:
     print("\n" + "=" * 100 + "\n## vista (vista previa de un tema, la usa la interfaz)")
+    empezar("vista_previa")
     t0 = time.time()
     res = {"escenario": "vista_previa", "archivos": 4, "formato": "%dx%d" % (c.VISTA_ANCHO, c.VISTA_ALTO), "ok": False, "fallas": []}
     try:
@@ -568,16 +603,19 @@ if not SOLO or "vista" in SOLO:
         res["fallas"].append("%s: %s" % (type(e).__name__, str(e)[:300]))
     res["segundos"] = round(time.time() - t0, 1)
     print("  %s: %s cuadros en %.1f s %s" % ("OK" if res["ok"] else "FALLA", res.get("cuadros"), res["segundos"], res["fallas"]))
-    RESULTADOS.append(res)
+    anotar(res)
 
 if not SOLO or "interfaz" in SOLO:
     print("\n" + "=" * 100 + "\n## interfaz (ventana principal sin pantalla)")
+    empezar("interfaz")
     t0 = time.time()
     res = {"escenario": "interfaz", "archivos": 0, "formato": "-", "ok": False, "fallas": []}
     try:                                   # como la app real: QEventLoop hasta 'cerrada'; se cierra como con el botón
         from PySide6 import QtCore, QtWidgets
         app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(["CineSlide"])
+        c.licencia_vigente = lambda: True                 # la máquina de prueba no tiene licencia: se prueba la interfaz, no la licencia
         Ventana = c._crear_clases_qt()
+        Ventana._licencia_revisar = lambda self, *a, **k: None
         ventana = Ventana(c._ProxyPrincipal())
         ventana.resize(1400, 900)
         bucle = QtCore.QEventLoop()
@@ -587,9 +625,16 @@ if not SOLO or "interfaz" in SOLO:
         res["abrir_s"] = round(time.time() - t0, 2)
 
         def capturar_y_cerrar():
+            modal = QtWidgets.QApplication.activeModalWidget()
+            if modal is not None and modal is not ventana:      # la primera vez se abre el asistente de bienvenida (modal)
+                res.setdefault("ventanas_modales", []).append(modal.windowTitle() or type(modal).__name__)
+                modal.grab().save(os.path.join(SALIDA, "interfaz_modal_%d.png" % len(res["ventanas_modales"])))
+                modal.reject() if hasattr(modal, "reject") else modal.close()
+                QtCore.QTimer.singleShot(1000, capturar_y_cerrar)
+                return
             ventana.grab().save(os.path.join(SALIDA, "interfaz.png"))
             ventana.close()
-        QtCore.QTimer.singleShot(1500, capturar_y_cerrar)
+        QtCore.QTimer.singleShot(4000, capturar_y_cerrar)              # el asistente aparece a los 0,9-2,7 s
         QtCore.QTimer.singleShot(30000, bucle.quit)                     # por si no se cerrara
         bucle.exec()
         res["ok"] = os.path.isfile(os.path.join(SALIDA, "interfaz.png"))
@@ -599,8 +644,9 @@ if not SOLO or "interfaz" in SOLO:
         traceback.print_exc()
         res["fallas"].append("%s: %s" % (type(e).__name__, str(e)[:300]))
     res["segundos"] = round(time.time() - t0, 1)
-    print("  %s: ventana en %s s %s" % ("OK" if res["ok"] else "FALLA", res.get("abrir_s"), res["fallas"]))
-    RESULTADOS.append(res)
+    print("  %s: ventana en %s s; ventanas que abrió solas: %s %s" % ("OK" if res["ok"] else "FALLA", res.get("abrir_s"),
+                                                                  res.get("ventanas_modales") or "ninguna", res["fallas"]))
+    anotar(res)
 
 texto = informe(INFO, time.time() - T_INICIO)
 print("\n" + texto)

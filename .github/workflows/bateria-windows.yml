@@ -96,7 +96,7 @@ jobs:
           name: bateria-${{ matrix.nombre }}
           path: |
             ${{ runner.temp }}/bateria/informe.*
-            ${{ runner.temp }}/bateria/interfaz.png
+            ${{ runner.temp }}/bateria/*.png
             ${{ runner.temp }}/bateria/*/*.mp4
           if-no-files-found: warn
           retention-days: 7
