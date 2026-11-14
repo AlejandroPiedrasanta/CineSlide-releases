@@ -25,11 +25,10 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       TAG: ${{ inputs.tag }}
-      OUT: ${{ runner.temp }}/capturas
     steps:
       - name: Descargar el instalador en Descargas (como el navegador)
         run: |
-          mkdir -p "$OUT"
+          mkdir -p "$RUNNER_TEMP/capturas"
           cd "$HOME/Downloads"
           gh release download $TAG --repo "$GITHUB_REPOSITORY" --pattern "*Mac_${{ inputs.mac }}.zip"
           ditto -x -k Instalar_CineSlide_v*_Mac_${{ inputs.mac }}.zip .      # como la Utilidad de Archivo de Finder
@@ -37,7 +36,7 @@ jobs:
           system_profiler SPDisplaysDataType | grep -iE "resolution|display type" || true
       - name: Abrir el instalador y capturar cada paso
         run: |
-          n=0
+          OUT="$RUNNER_TEMP/capturas"; n=0
           foto() { n=$((n+1)); f=$(printf "%s/%02d_%s.png" "$OUT" "$n" "$1"); if screencapture -x "$f"; then echo "captura: $(basename "$f")"; else echo "SIN CAPTURA: $1"; fi; }
           CARPETA="$(ls -d "$HOME/Downloads"/CineSlide*/ | head -1)"
           LOGS="$HOME/Library/Application Support/CineSlide/datos/logs"
