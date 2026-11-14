@@ -52,14 +52,8 @@ jobs:
           if ls *.dmg >/dev/null 2>&1; then                        # (9.58) DMG
             mnt=$(hdiutil attach -nobrowse -readonly *.dmg | grep -o '/Volumes/.*$' | head -1)
             ls -la "$mnt"
-            if [ -d "$mnt/CineSlide.app" ]; then                   # (9.60) se arrastra a Aplicaciones, como el cliente
-              ditto "$mnt/CineSlide.app" /Applications/CineSlide.app || sudo ditto "$mnt/CineSlide.app" /Applications/CineSlide.app
-              RES="/Applications/CineSlide.app/Contents/Resources"
-              CINESLIDE_CI=1 CINESLIDE_APP_BUNDLE=/Applications/CineSlide.app CINESLIDE_PAQUETE="$RES/paquete" bash "$RES/instalar_mac.sh"
-            else                                                    # 9.58-9.59: la app "Instalar CineSlide"
-              RES="$mnt/Instalar CineSlide.app/Contents/Resources"
-              CINESLIDE_CI=1 CINESLIDE_PAQUETE="$RES/paquete" bash "$RES/instalar_mac.sh"
-            fi
+            RES="$mnt/Instalar CineSlide.app/Contents/Resources"   # la app "Instalar CineSlide" con su paquete
+            CINESLIDE_CI=1 CINESLIDE_PAQUETE="$RES/paquete" bash "$RES/instalar_mac.sh"   # (9.61) deja CineSlide.app en /Applications
             hdiutil detach "$mnt"
           else
             unzip -q Instalar_CineSlide_v*_Mac_${{ matrix.nombre }}.zip
@@ -76,7 +70,7 @@ jobs:
       - name: Comprobar app, icono, Python, PySide6 y ffmpeg
         run: |
           DIR="$HOME/Library/Application Support/CineSlide"
-          APP=$(cat "$DIR/app.txt" 2>/dev/null); [ -d "$APP" ] || APP="$HOME/Applications/CineSlide.app"   # (9.60) la de Aplicaciones
+          APP=$(cat "$DIR/app.txt" 2>/dev/null); [ -d "$APP" ] || APP="$HOME/Applications/CineSlide.app"   # (9.61) la de Aplicaciones
           echo "Versión instalada: $(cat "$DIR/version.txt") · app: $APP"
           test -f "$DIR/CineSlide.py" && test -d "$APP" && test -x "$APP/Contents/MacOS/CineSlide"
           if [ "$APP" = "/Applications/CineSlide.app" ]; then

@@ -1,9 +1,9 @@
 name: Capturas del instalador en Mac
 
 # A mano: baja el DMG del instalador a ~/Downloads de un Mac real de GitHub y lo usa como el cliente (lo abre, se ve su ventana,
-# (9.60) copia CineSlide a Aplicaciones como al arrastrarla y la abre: la ventana del instalador, sin Terminal; al terminar se
-# abre CineSlide; luego la abre otra vez, que ya debe entrar directo) y saca capturas de pantalla completas en cada paso. Las
-# capturas quedan en "Artifacts" de la ejecución.
+# doble clic en "Instalar CineSlide": la ventana del instalador, sin Terminal; (9.61) al terminar deja CineSlide en Aplicaciones,
+# lo abre, se cierra y expulsa el DMG; luego se abre CineSlide desde Aplicaciones, que debe entrar directo) y saca capturas de
+# pantalla completas en cada paso. Las capturas quedan en "Artifacts" de la ejecución.
 #   gh workflow run capturas-mac.yml -R AlejandroPiedrasanta/CineSlide-releases -f tag=v9.58 -f mac=Silicon
 #   gh workflow run capturas-mac.yml -R AlejandroPiedrasanta/CineSlide-releases -f borrador=construir-dmg      (sin publicar)
 # No reproduce el aviso de Gatekeeper: lo que baja gh no lleva la marca de cuarentena del navegador.
@@ -66,14 +66,8 @@ jobs:
           done
           test -n "$VOL" || { foto dmg_no_monto; exit 1; }
           sleep 3; open "$VOL"; sleep 4; foto ventana_del_dmg
-          if [ -d "$VOL/CineSlide.app" ]; then                     # (9.60) = arrastrarla a "Aplicaciones" y abrirla desde ahí
-            ditto "$VOL/CineSlide.app" /Applications/CineSlide.app || sudo ditto "$VOL/CineSlide.app" /Applications/CineSlide.app
-            APPX=/Applications/CineSlide.app
-            open /Applications; sleep 4; foto copiada_en_aplicaciones
-          else
-            APPX="$VOL/Instalar CineSlide.app"                     # 9.58-9.59
-          fi
-          open "$APPX"                                             # = doble clic en la app
+          APPX="$VOL/Instalar CineSlide.app"
+          open "$APPX"                                             # = doble clic en "Instalar CineSlide"
           sleep 3; foto app_abriendo
           pasos=0; t=0; log=""; ultima=0
           while [ $t -lt 2400 ]; do
@@ -93,9 +87,11 @@ jobs:
           pgrep -fl "Terminal" && echo "AVISO: hay una Terminal abierta" || echo "sin Terminal"
           echo "app.txt: $(cat "$HOME/Library/Application Support/CineSlide/app.txt" 2>/dev/null)"
           test -e "$HOME/Applications/CineSlide.app" && echo "AVISO: quedó ~/Applications/CineSlide.app" || echo "sin lanzador en ~/Applications"
-          # (9.60) segunda vez: la app ya entra directo a CineSlide (sin el instalador)
+          ls -d /Volumes/CineSlide* 2>/dev/null && echo "AVISO: el DMG sigue montado" || echo "el DMG se expulsó solo"
+          open /Applications; sleep 4; foto cineslide_en_aplicaciones
+          # (9.61) segunda vez, desde Aplicaciones: CineSlide directo (sin el instalador)
           pkill -f "python3 -m CineSlide" >/dev/null 2>&1 || true; pkill -f "CineSlide/CineSlide.py" >/dev/null 2>&1 || true; sleep 4
-          open "$APPX"; sleep 14; foto segunda_vez
+          open "$(cat "$HOME/Library/Application Support/CineSlide/app.txt")"; sleep 14; foto segunda_vez
           pgrep -fl "instalador_ventana" && echo "AVISO: la segunda vez abrió el instalador" || echo "la segunda vez fue directo a CineSlide"
           pgrep -fl "python3 -m CineSlide" || pgrep -fl "CineSlide.py" || echo "AVISO: CineSlide no está abierto"
       - name: Guardar las capturas
