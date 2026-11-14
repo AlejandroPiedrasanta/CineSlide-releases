@@ -1,0 +1,56 @@
+name: Probar la ventana del instalador (Swift)
+
+# (9.62) A mano y rápido (sin armar el DMG): compila instalador_mac.swift (arm64 + x86_64), lo abre en una Mac real de GitHub en
+# modo demostración (--demo y --demo-error, no instala nada) y saca capturas a los 0,5 s, 1 s, 4 s, 8 s y al terminar, para ver
+# que la ventana sale AL INSTANTE y cómo se ve. Las capturas quedan en "Artifacts".
+#   gh workflow run probar-instalador.yml -R AlejandroPiedrasanta/CineSlide-releases
+on:
+  workflow_dispatch:
+
+jobs:
+  ventana:
+    name: Ventana del instalador
+    runs-on: macos-15
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - name: Compilar (arm64 + x86_64)
+        run: |
+          swiftc --version
+          swiftc -O -parse-as-library -target arm64-apple-macos14.0 instalador_mac.swift -o "$RUNNER_TEMP/instalar_arm64"
+          swiftc -O -parse-as-library -target x86_64-apple-macos14.0 instalador_mac.swift -o "$RUNNER_TEMP/instalar_x86_64"
+          lipo -create "$RUNNER_TEMP/instalar_arm64" "$RUNNER_TEMP/instalar_x86_64" -output "$RUNNER_TEMP/instalar"
+          file "$RUNNER_TEMP/instalar"
+      - name: Abrir en demostración y capturar
+        run: |
+          A="$RUNNER_TEMP/Instalar CineSlide.app"
+          mkdir -p "$A/Contents/MacOS" "$A/Contents/Resources/paquete"
+          cp "$RUNNER_TEMP/instalar" "$A/Contents/MacOS/instalar"
+          sips -s format png /System/Library/CoreServices/CoreTypes.bundle/Contents/Resources/GenericApplicationIcon.icns \
+            --out "$A/Contents/Resources/paquete/CineSlide.png" >/dev/null || true
+          /usr/libexec/PlistBuddy -c "Add :CFBundleName string Instalar CineSlide" \
+            -c "Add :CFBundleIdentifier string com.cinemaproductions.cineslide.instalador" \
+            -c "Add :CFBundleExecutable string instalar" -c "Add :CFBundlePackageType string APPL" \
+            -c "Add :CFBundleShortVersionString string 9.62" -c "Add :CFBundleVersion string 9.62" \
+            -c "Add :LSMinimumSystemVersion string 14.0" -c "Add :NSHighResolutionCapable bool true" "$A/Contents/Info.plist"
+          codesign --force --deep -s - "$A"
+          OUT="$RUNNER_TEMP/cap"; mkdir -p "$OUT"
+          open "$A" --args --demo
+          sleep 0.5; screencapture -x "$OUT/01_medio_segundo.png"
+          sleep 0.5; screencapture -x "$OUT/02_un_segundo.png"
+          sleep 3; screencapture -x "$OUT/03_cuatro_segundos.png"
+          sleep 4; screencapture -x "$OUT/04_ocho_segundos.png"
+          sleep 5; screencapture -x "$OUT/05_listo.png"
+          pkill -f "MacOS/instalar" || true; sleep 2
+          open "$A" --args --demo-error
+          sleep 10; screencapture -x "$OUT/06_error.png"
+          pkill -f "MacOS/instalar" || true
+          ls -la "$OUT"
+      - name: Guardar las capturas
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: ventana-instalador
+          path: ${{ runner.temp }}/cap/*.png
+          if-no-files-found: warn
+          retention-days: 14
