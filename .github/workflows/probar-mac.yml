@@ -49,11 +49,17 @@ jobs:
       - name: Instalar (CINESLIDE_CI=1, sin ventanas)
         run: |
           cd work
-          if ls *.dmg >/dev/null 2>&1; then                        # (9.58) DMG: la app "Instalar CineSlide" con su paquete
+          if ls *.dmg >/dev/null 2>&1; then                        # (9.58) DMG
             mnt=$(hdiutil attach -nobrowse -readonly *.dmg | grep -o '/Volumes/.*$' | head -1)
             ls -la "$mnt"
-            RES="$mnt/Instalar CineSlide.app/Contents/Resources"
-            CINESLIDE_CI=1 CINESLIDE_PAQUETE="$RES/paquete" bash "$RES/instalar_mac.sh"
+            if [ -d "$mnt/CineSlide.app" ]; then                   # (9.60) se arrastra a Aplicaciones, como el cliente
+              ditto "$mnt/CineSlide.app" /Applications/CineSlide.app || sudo ditto "$mnt/CineSlide.app" /Applications/CineSlide.app
+              RES="/Applications/CineSlide.app/Contents/Resources"
+              CINESLIDE_CI=1 CINESLIDE_APP_BUNDLE=/Applications/CineSlide.app CINESLIDE_PAQUETE="$RES/paquete" bash "$RES/instalar_mac.sh"
+            else                                                    # 9.58-9.59: la app "Instalar CineSlide"
+              RES="$mnt/Instalar CineSlide.app/Contents/Resources"
+              CINESLIDE_CI=1 CINESLIDE_PAQUETE="$RES/paquete" bash "$RES/instalar_mac.sh"
+            fi
             hdiutil detach "$mnt"
           else
             unzip -q Instalar_CineSlide_v*_Mac_${{ matrix.nombre }}.zip
@@ -70,9 +76,13 @@ jobs:
       - name: Comprobar app, icono, Python, PySide6 y ffmpeg
         run: |
           DIR="$HOME/Library/Application Support/CineSlide"
-          APP="$HOME/Applications/CineSlide.app"
-          echo "Versión instalada: $(cat "$DIR/version.txt")"
+          APP=$(cat "$DIR/app.txt" 2>/dev/null); [ -d "$APP" ] || APP="$HOME/Applications/CineSlide.app"   # (9.60) la de Aplicaciones
+          echo "Versión instalada: $(cat "$DIR/version.txt") · app: $APP"
           test -f "$DIR/CineSlide.py" && test -d "$APP" && test -x "$APP/Contents/MacOS/CineSlide"
+          if [ "$APP" = "/Applications/CineSlide.app" ]; then
+            test ! -e "$HOME/Applications/CineSlide.app" && echo "sin el lanzador viejo de ~/Applications"
+            "$APP/Contents/MacOS/CineSlide" --manifiesto && echo "ya instalado: la app entra directo a CineSlide"
+          fi
           plutil -lint "$APP/Contents/Info.plist"
           plutil -p "$APP/Contents/Info.plist" | grep -E "CFBundleIconFile|CFBundleVersion"
           ICNS="$APP/Contents/Resources/CineSlide.icns"

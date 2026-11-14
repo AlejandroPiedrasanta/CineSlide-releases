@@ -57,7 +57,13 @@ jobs:
           # (9.58) el DMG (la app "Instalar CineSlide" con su paquete) o, en Releases viejos, el .zip con el .command
           if gh release download $TAG --repo "$GITHUB_REPOSITORY" --pattern "*Mac_${{ matrix.zip }}.dmg" 2>/dev/null; then
             mnt=$(hdiutil attach -nobrowse -readonly *.dmg | grep -o '/Volumes/.*$' | head -1)
-            RES="$mnt/Instalar CineSlide.app/Contents/Resources"
+            if [ -d "$mnt/CineSlide.app" ]; then                   # (9.60) se arrastra a Aplicaciones, como el cliente
+              ditto "$mnt/CineSlide.app" /Applications/CineSlide.app || sudo ditto "$mnt/CineSlide.app" /Applications/CineSlide.app
+              RES="/Applications/CineSlide.app/Contents/Resources"
+              export CINESLIDE_APP_BUNDLE=/Applications/CineSlide.app
+            else
+              RES="$mnt/Instalar CineSlide.app/Contents/Resources"  # 9.58-9.59
+            fi
             CINESLIDE_CI=1 CINESLIDE_PAQUETE="$RES/paquete" bash "$RES/instalar_mac.sh" > instalacion.log 2>&1 || { tail -60 instalacion.log; exit 1; }
             hdiutil detach "$mnt"
           else
