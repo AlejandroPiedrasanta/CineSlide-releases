@@ -1,9 +1,10 @@
 name: Capturas del instalador en Mac
 
-# A mano: descarga el instalador del Release en ~/Downloads de un Mac real de GitHub, lo abre como lo haría el cliente
-# (Finder, LEEME, doble clic en "Instalar CineSlide.command" -> Terminal, SIN CINESLIDE_CI) y saca capturas de pantalla
-# completas en cada paso y de CineSlide al abrirse solo al final. Las capturas quedan en "Artifacts" de la ejecución.
-#   gh workflow run capturas-mac.yml -R AlejandroPiedrasanta/CineSlide-releases -f tag=v9.57 -f mac=Silicon
+# A mano: baja el DMG del instalador a ~/Downloads de un Mac real de GitHub y lo usa como el cliente (lo abre, se ve su ventana,
+# doble clic en "Instalar CineSlide": la ventana del instalador, sin Terminal; al terminar se abre CineSlide) y saca capturas de
+# pantalla completas en cada paso. Las capturas quedan en "Artifacts" de la ejecución.
+#   gh workflow run capturas-mac.yml -R AlejandroPiedrasanta/CineSlide-releases -f tag=v9.58 -f mac=Silicon
+#   gh workflow run capturas-mac.yml -R AlejandroPiedrasanta/CineSlide-releases -f borrador=construir-dmg      (sin publicar)
 # No reproduce el aviso de Gatekeeper: lo que baja gh no lleva la marca de cuarentena del navegador.
 on:
   workflow_dispatch:
@@ -11,11 +12,17 @@ on:
       tag:
         description: "Versión (vacío = la última)"
         required: false
+      borrador:
+        description: "Borrador de Release con el DMG (opcional: para probar sin publicar)"
+        required: false
       mac:
         description: "Tipo de Mac"
         type: choice
         options: [Silicon, Intel]
         default: Silicon
+
+permissions:
+  contents: write      # solo para poder leer los borradores de Release (no publica nada)
 
 jobs:
   capturas:
@@ -25,46 +32,57 @@ jobs:
     env:
       GH_TOKEN: ${{ github.token }}
       TAG: ${{ inputs.tag }}
+      BORRADOR: ${{ inputs.borrador }}
     steps:
-      - name: Descargar el instalador en Descargas (como el navegador)
+      - name: Descargar el DMG en Descargas (como el navegador)
         run: |
           mkdir -p "$RUNNER_TEMP/capturas"
           cd "$HOME/Downloads"
-          gh release download $TAG --repo "$GITHUB_REPOSITORY" --pattern "*Mac_${{ inputs.mac }}.zip"
-          ditto -x -k Instalar_CineSlide_v*_Mac_${{ inputs.mac }}.zip .      # como la Utilidad de Archivo de Finder
-          ls -la . CineSlide*/
+          if [ -n "$BORRADOR" ]; then
+            gh api "repos/$GITHUB_REPOSITORY/releases?per_page=50" \
+              --jq ".[] | select(.draft and .tag_name == \"$BORRADOR\") | .assets[] | select(.name | endswith(\"Mac_${{ inputs.mac }}.dmg\")) | \"\(.url) \(.name)\"" | head -1 > lista.txt
+            read -r url nombre < lista.txt || true
+            test -n "$url" || { echo "El borrador '$BORRADOR' no tiene el DMG de Mac ${{ inputs.mac }}"; exit 1; }
+            gh api -H "Accept: application/octet-stream" "$url" > "$nombre"
+            rm -f lista.txt
+          else
+            gh release download $TAG --repo "$GITHUB_REPOSITORY" --pattern "*Mac_${{ inputs.mac }}.dmg"
+          fi
+          ls -la
           system_profiler SPDisplaysDataType | grep -iE "resolution|display type" || true
-      - name: Abrir el instalador y capturar cada paso
+      - name: Abrir el DMG, instalar con la app y capturar cada paso
         run: |
           OUT="$RUNNER_TEMP/capturas"; n=0
           foto() { n=$((n+1)); f=$(printf "%s/%02d_%s.png" "$OUT" "$n" "$1"); if screencapture -x "$f"; then echo "captura: $(basename "$f")"; else echo "SIN CAPTURA: $1"; fi; }
-          CARPETA="$(ls -d "$HOME/Downloads"/CineSlide*/ | head -1)"
           LOGS="$HOME/Library/Application Support/CineSlide/datos/logs"
+          DMG="$(ls "$HOME/Downloads"/*.dmg | head -1)"
           open "$HOME/Downloads"; sleep 4; foto descargas
-          open "$CARPETA"; sleep 4; foto carpeta_del_instalador
-          open -e "$CARPETA/LEEME.txt"; sleep 5; foto leeme
-          killall TextEdit 2>/dev/null || true; sleep 1
-          open "$CARPETA/Instalar CineSlide.command"          # = doble clic: se abre en Terminal
-          sleep 5; foto terminal_inicio
-          pasos=0; t=0; log=""
+          open "$DMG"                                              # = doble clic en el DMG
+          VOL=""
+          for i in $(seq 1 60); do
+            VOL=$(ls -d /Volumes/CineSlide* 2>/dev/null | head -1)
+            [ -n "$VOL" ] && break; sleep 1
+          done
+          test -n "$VOL" || { foto dmg_no_monto; exit 1; }
+          sleep 3; open "$VOL"; sleep 4; foto ventana_del_dmg
+          open "$VOL/Instalar CineSlide.app"                       # = doble clic en "Instalar CineSlide"
+          sleep 3; foto app_abriendo
+          pasos=0; t=0; log=""; ultima=0
           while [ $t -lt 2400 ]; do
-            sleep 3; t=$((t+3))
+            sleep 2; t=$((t+2))
             [ -z "$log" ] && log=$(ls -t "$LOGS"/instalador_mac_*.log 2>/dev/null | head -1)
-            if [ -z "$log" ]; then
-              if [ $t -eq 60 ]; then foto sin_registro_60s; fi
-              if [ $t -eq 90 ]; then                          # atascado (permiso de Descargas?): se abre desde la carpeta de usuario
-                cp -R "$CARPETA" "$HOME/"; open "$HOME/$(basename "$CARPETA")/Instalar CineSlide.command"
-              fi
-              continue
-            fi
+            [ -z "$log" ] && continue
             p=$(grep -c "▸" "$log" 2>/dev/null) || true; p=${p:-0}
-            if [ "$p" != "$pasos" ]; then pasos=$p; sleep 2; t=$((t+2)); foto "paso_$p"; ultima=$t; fi
-            if [ $((t - ${ultima:-0})) -ge 90 ]; then foto "progreso_${t}s"; ultima=$t; fi
+            if [ "$p" != "$pasos" ]; then pasos=$p; sleep 1; t=$((t+1)); foto "paso_$p"; ultima=$t; fi
+            if [ $((t - ultima)) -ge 40 ]; then foto "progreso_${t}s"; ultima=$t; fi
             if grep -qE "quedó instalado|✗" "$log"; then break; fi
           done
-          sleep 3; foto terminal_final
-          echo "--- registro del instalador"; tail -40 "$log" | sed 's/\x1b\[[0-9;]*m//g'
-          for s in 8 15 25; do sleep $s; foto "cineslide_abierto"; done
+          sleep 1; foto instalador_listo
+          sleep 3; foto instalador_cuenta_atras
+          echo "--- registro del instalador"; sed 's/\x1b\[[0-9;]*m//g' "$log" | tail -45
+          for s in 6 10 15; do sleep $s; foto cineslide_abierto; done
+          pgrep -fl "instalador_ventana" && echo "AVISO: la ventana del instalador sigue abierta" || echo "la ventana del instalador se cerró sola"
+          pgrep -fl "Terminal" && echo "AVISO: hay una Terminal abierta" || echo "sin Terminal"
           open "$HOME/Applications"; sleep 4; foto app_en_aplicaciones
       - name: Guardar las capturas
         if: always()

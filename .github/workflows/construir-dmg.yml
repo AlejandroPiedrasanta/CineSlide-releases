@@ -1,0 +1,77 @@
+name: Construir DMG de Mac
+
+# (9.58) Lo lanza Construir_Instalador_Mac.py (Windows no puede armar un DMG): baja del BORRADOR privado de Release las apps
+# "Instalar CineSlide.app" que armó Windows (Instalar_CineSlide_v<v>_Mac_<tipo>_app.zip), las firma ad hoc, arma con dmgbuild
+# Instalar_CineSlide_v<v>_Mac_<tipo>.dmg (ventana con el fondo de CineSlide, icono grande, sin barras), comprueba que se monta
+# y que la app está firmada, y sube los DMG al mismo borrador (de ahí los baja Construir_Instalador_Mac.py).
+#   gh workflow run construir-dmg.yml -R AlejandroPiedrasanta/CineSlide-releases -f borrador=construir-dmg
+on:
+  workflow_dispatch:
+    inputs:
+      borrador:
+        description: "Borrador de Release con los _app.zip"
+        required: false
+        default: construir-dmg
+
+permissions:
+  contents: write      # leer y subir archivos del borrador (no publica nada)
+
+jobs:
+  dmg:
+    name: Armar los DMG
+    runs-on: macos-15
+    timeout-minutes: 40
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BORRADOR: ${{ inputs.borrador || 'construir-dmg' }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Bajar las apps del borrador
+        run: |
+          mkdir -p work && cd work
+          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=50" \
+            --jq ".[] | select(.draft and .tag_name == \"$BORRADOR\") | .assets[] | select(.name | endswith(\"_app.zip\")) | \"\(.url) \(.name)\"" > lista.txt
+          test -s lista.txt || { echo "El borrador '$BORRADOR' no tiene apps (_app.zip)"; exit 1; }
+          while read -r url nombre; do
+            gh api -H "Accept: application/octet-stream" "$url" > "$nombre"
+            ls -la "$nombre"
+          done < lista.txt
+      - name: Herramienta dmgbuild
+        run: |
+          python3 -m venv "$RUNNER_TEMP/v"
+          "$RUNNER_TEMP/v/bin/pip" install -q "dmgbuild>=1.6,<2"
+          "$RUNNER_TEMP/v/bin/dmgbuild" --help | head -3
+      - name: Armar, firmar y comprobar cada DMG
+        run: |
+          cd work
+          for z in *_app.zip; do
+            base="${z%_app.zip}"                                   # Instalar_CineSlide_v9.58_Mac_Silicon
+            version=$(echo "$base" | sed -E 's/^Instalar_CineSlide_v([0-9.]+)_Mac_.*/\1/')
+            echo "== $base (CineSlide $version)"
+            rm -rf app && mkdir app && ditto -x -k "$z" app
+            APPDIR="app/Instalar CineSlide.app"
+            chmod +x "$APPDIR/Contents/MacOS/instalar" "$APPDIR/Contents/Resources/instalar_mac.sh"
+            xattr -cr "$APPDIR"
+            codesign --force --deep -s - "$APPDIR"
+            codesign -v --deep "$APPDIR" && echo "firma ad hoc OK"
+            plutil -lint "$APPDIR/Contents/Info.plist"
+            bash -n "$APPDIR/Contents/MacOS/instalar" && bash -n "$APPDIR/Contents/Resources/instalar_mac.sh"
+            tiffutil -cathidpicheck app/dmg/fondo.png app/dmg/fondo@2x.png -out app/dmg/fondo.tiff
+            "$RUNNER_TEMP/v/bin/dmgbuild" -s ../dmg_ajustes.py \
+              -D app="$PWD/$APPDIR" -D fondo="$PWD/app/dmg/fondo.tiff" -D icono="$PWD/app/dmg/volumen.icns" \
+              "CineSlide $version" "$base.dmg"
+            hdiutil verify "$base.dmg"
+            mnt=$(hdiutil attach -nobrowse -readonly "$base.dmg" | grep -o '/Volumes/.*$' | head -1)
+            echo "montado en: $mnt"
+            ls -la "$mnt"
+            test -x "$mnt/Instalar CineSlide.app/Contents/MacOS/instalar"
+            test -f "$mnt/Instalar CineSlide.app/Contents/Resources/paquete/CineSlide.py"
+            codesign -v --deep "$mnt/Instalar CineSlide.app" && echo "la app del DMG está firmada"
+            du -sh "$mnt/Instalar CineSlide.app"
+            hdiutil detach "$mnt"
+            ls -la "$base.dmg"
+          done
+      - name: Subir los DMG al borrador
+        run: |
+          cd work
+          gh release upload "$BORRADOR" *.dmg --repo "$GITHUB_REPOSITORY" --clobber

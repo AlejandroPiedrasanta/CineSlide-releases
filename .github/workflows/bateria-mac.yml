@@ -54,9 +54,17 @@ jobs:
         run: |
           sw_vers
           mkdir -p work && cd work
-          gh release download $TAG --repo "$GITHUB_REPOSITORY" --pattern "*Mac_${{ matrix.zip }}.zip"
-          unzip -q Instalar_CineSlide_v*_Mac_${{ matrix.zip }}.zip
-          CINESLIDE_CI=1 bash "$(ls -d CineSlide*/ | head -1)Instalar CineSlide.command" > instalacion.log 2>&1 || { tail -60 instalacion.log; exit 1; }
+          # (9.58) el DMG (la app "Instalar CineSlide" con su paquete) o, en Releases viejos, el .zip con el .command
+          if gh release download $TAG --repo "$GITHUB_REPOSITORY" --pattern "*Mac_${{ matrix.zip }}.dmg" 2>/dev/null; then
+            mnt=$(hdiutil attach -nobrowse -readonly *.dmg | grep -o '/Volumes/.*$' | head -1)
+            RES="$mnt/Instalar CineSlide.app/Contents/Resources"
+            CINESLIDE_CI=1 CINESLIDE_PAQUETE="$RES/paquete" bash "$RES/instalar_mac.sh" > instalacion.log 2>&1 || { tail -60 instalacion.log; exit 1; }
+            hdiutil detach "$mnt"
+          else
+            gh release download $TAG --repo "$GITHUB_REPOSITORY" --pattern "*Mac_${{ matrix.zip }}.zip"
+            unzip -q Instalar_CineSlide_v*_Mac_${{ matrix.zip }}.zip
+            CINESLIDE_CI=1 bash "$(ls -d CineSlide*/ | head -1)Instalar CineSlide.command" > instalacion.log 2>&1 || { tail -60 instalacion.log; exit 1; }
+          fi
           tail -3 instalacion.log
       - name: Poner el CineSlide.py del borrador
         if: ${{ inputs.borrador != '' }}
