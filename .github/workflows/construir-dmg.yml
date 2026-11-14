@@ -50,12 +50,18 @@ jobs:
             echo "== $base (CineSlide $version)"
             rm -rf app && mkdir app && ditto -x -k "$z" app
             APPDIR="app/Instalar CineSlide.app"
+            # (9.62) la ventana nativa del instalador: Swift, universal (Apple Silicon + Intel)
+            mkdir -p "$APPDIR/Contents/MacOS"
+            swiftc -O -parse-as-library -target arm64-apple-macos14.0 app/dmg/instalador_mac.swift -o "$RUNNER_TEMP/instalar_arm64"
+            swiftc -O -parse-as-library -target x86_64-apple-macos14.0 app/dmg/instalador_mac.swift -o "$RUNNER_TEMP/instalar_x86_64"
+            lipo -create "$RUNNER_TEMP/instalar_arm64" "$RUNNER_TEMP/instalar_x86_64" -output "$APPDIR/Contents/MacOS/instalar"
+            file "$APPDIR/Contents/MacOS/instalar"
             chmod +x "$APPDIR/Contents/MacOS/instalar" "$APPDIR/Contents/Resources/instalar_mac.sh"
             xattr -cr "$APPDIR"
             codesign --force --deep -s - "$APPDIR"
             codesign -v --deep "$APPDIR" && echo "firma ad hoc OK"
             plutil -lint "$APPDIR/Contents/Info.plist"
-            bash -n "$APPDIR/Contents/MacOS/instalar" && bash -n "$APPDIR/Contents/Resources/instalar_mac.sh"
+            bash -n "$APPDIR/Contents/Resources/instalar_mac.sh"
             tiffutil -cathidpicheck app/dmg/fondo.png app/dmg/fondo@2x.png -out app/dmg/fondo.tiff
             "$RUNNER_TEMP/v/bin/dmgbuild" -s ../dmg_ajustes.py \
               -D app="$PWD/$APPDIR" -D fondo="$PWD/app/dmg/fondo.tiff" -D icono="$PWD/app/dmg/volumen.icns" \

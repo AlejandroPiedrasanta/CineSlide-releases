@@ -68,7 +68,7 @@ jobs:
           sleep 3; open "$VOL"; sleep 4; foto ventana_del_dmg
           APPX="$VOL/Instalar CineSlide.app"
           open "$APPX"                                             # = doble clic en "Instalar CineSlide"
-          sleep 3; foto app_abriendo
+          sleep 1; foto app_al_segundo
           pasos=0; t=0; log=""; ultima=0
           while [ $t -lt 2400 ]; do
             sleep 2; t=$((t+2))
@@ -83,16 +83,18 @@ jobs:
           sleep 3; foto instalador_cuenta_atras
           echo "--- registro del instalador"; sed 's/\x1b\[[0-9;]*m//g' "$log" | tail -45
           for s in 6 10 15; do sleep $s; foto cineslide_abierto; done
-          pgrep -fl "instalador_ventana" && echo "AVISO: la ventana del instalador sigue abierta" || echo "la ventana del instalador se cerró sola"
+          pgrep -fl "Instalar CineSlide.app/Contents/MacOS/instalar" && echo "AVISO: la ventana del instalador sigue abierta" || echo "la ventana del instalador se cerró sola"
           pgrep -fl "Terminal" && echo "AVISO: hay una Terminal abierta" || echo "sin Terminal"
           echo "app.txt: $(cat "$HOME/Library/Application Support/CineSlide/app.txt" 2>/dev/null)"
+          echo "en el Dock: $(defaults read com.apple.dock persistent-apps 2>/dev/null | grep -c 'CineSlide.app') vez/veces"   # (9.62)
+          pgrep -fl "CineSlide.py --precalentar" >/dev/null && echo "plantillas preparándose en segundo plano" || echo "plantillas: el proceso de fondo ya terminó"
           test -e "$HOME/Applications/CineSlide.app" && echo "AVISO: quedó ~/Applications/CineSlide.app" || echo "sin lanzador en ~/Applications"
           ls -d /Volumes/CineSlide* 2>/dev/null && echo "AVISO: el DMG sigue montado" || echo "el DMG se expulsó solo"
           open /Applications; sleep 4; foto cineslide_en_aplicaciones
           # (9.61) segunda vez, desde Aplicaciones: CineSlide directo (sin el instalador)
           pkill -f "python3 -m CineSlide" >/dev/null 2>&1 || true; pkill -f "CineSlide/CineSlide.py" >/dev/null 2>&1 || true; sleep 4
           open "$(cat "$HOME/Library/Application Support/CineSlide/app.txt")"; sleep 14; foto segunda_vez
-          pgrep -fl "instalador_ventana" && echo "AVISO: la segunda vez abrió el instalador" || echo "la segunda vez fue directo a CineSlide"
+          pgrep -fl "Instalar CineSlide.app/Contents/MacOS/instalar" && echo "AVISO: la segunda vez abrió el instalador" || echo "la segunda vez fue directo a CineSlide"
           pgrep -fl "python3 -m CineSlide" || pgrep -fl "CineSlide.py" || echo "AVISO: CineSlide no está abierto"
       - name: Guardar las capturas
         if: always()

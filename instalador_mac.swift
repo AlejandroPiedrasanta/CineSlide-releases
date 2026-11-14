@@ -311,8 +311,11 @@ struct VistaInstalador: View {
         GeometryReader { g in
             let w: CGFloat = max(10, g.size.width * CGFloat(min(100, av.valor)) / 100)
             ZStack(alignment: .leading) {
-                Capsule().fill(Color.white.opacity(0.07))
-                Capsule().fill(rellenoBarra).frame(width: w)
+                Capsule().fill(Color.white.opacity(0.07)).frame(height: 10)
+                Capsule().fill(rellenoBarra).frame(width: w, height: 10)
+            }
+            .frame(height: 10)
+            .overlay(alignment: .leading) {                     // brillo en la punta (no cambia el alto de la barra)
                 if av.estado == "instalando" {
                     Circle().fill(RadialGradient(colors: [CIAN.opacity(0.55), CIAN.opacity(0)], center: .center, startRadius: 0,
                                                  endRadius: 16))
@@ -332,7 +335,11 @@ struct VistaInstalador: View {
         } else if actual && !av.vivo.isEmpty {
             detalle = av.vivo
         } else if hecho && !av.detalles[i].isEmpty {
-            detalle = av.detalles[i].suffix(2).map { $0.hasSuffix(".") ? String($0.dropLast()) : $0 }.joined(separator: " · ")
+            detalle = av.detalles[i].suffix(2).map { d -> String in
+                var s = d.components(separatedBy: " (").first ?? d          // sin lo que va entre paréntesis
+                if s.hasSuffix(".") { s.removeLast() }
+                return s
+            }.joined(separator: " · ")
         }
         let nombre = i == 3 ? "Programa CineSlide \(version)" : PASOS[i - 1]
         return HStack(spacing: 12) {
