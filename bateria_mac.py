@@ -45,6 +45,7 @@ sys.path.insert(0, CARPETA)
 os.chdir(CARPETA)
 import CineSlide as c  # noqa: E402
 
+CREAR_EXPRESS = c.crear_presentacion_express          # el original (algún escenario lo envuelve un rato)
 c._lic_exigir = lambda *a, **k: None
 REGISTRO = []
 _log_original = c._log
@@ -890,7 +891,12 @@ if not SOLO or "pausa_apps" in SOLO:         # (9.71) pausar las demás apps mie
         app, v = _ventana_prueba()
         v._avisar_fin = lambda *a, **k: None
         crear = v.principal.crear_presentacion_express
+        # OJO: _ProxyPrincipal escribe en las globales del módulo: se deshace al final (si no, los escenarios de después
+        # reciben carpeta_salida dos veces)
         v.principal.crear_presentacion_express = lambda *a, **k: crear(*a, carpeta_salida=carpeta("pausa_video"), **k)
+        t_reanuda = []                                       # cuándo se reanudan de verdad (en máquinas lentas, antes del fin)
+        _terminar = c.pausa_terminar
+        c.pausa_terminar = lambda *a, **k: (t_reanuda.append(time.time()), _terminar(*a, **k))[1]
         dv = carpeta("material_pausa_video")
         for i, f in enumerate(POZO[:3]):
             with open(f, "rb") as fo, open(os.path.join(dv, "foto_%d.jpg" % i), "wb") as fd:
@@ -907,12 +913,18 @@ if not SOLO or "pausa_apps" in SOLO:         # (9.71) pausar las demás apps mie
         hilo = threading.Thread(target=mirar, daemon=True)
         hilo.start()
         t_v = time.time()
-        v.ejecutar()
+        try:
+            v.ejecutar()
+        finally:
+            v.principal.crear_presentacion_express = crear
+            c.pausa_terminar = _terminar
         t_f = time.time()
         time.sleep(1.5)
         fin_m[0] = True
         hilo.join(5)
-        durante = [u for t, u in linea if t_v + 3.0 < t < t_f - 0.5]
+        t_r = min(t_reanuda + [t_f])
+        # cada muestra mide [t, t + 0,5 s]: solo las que terminan antes de reanudarlas
+        durante = [u for t, u in linea if t_v + 3.0 < t and t + 0.6 < t_r]
         final = [u for t, u in linea if t > t_f + 0.6]
         quieto_ok = all(all((x.get(p) or 0) < 0.05 for p in ocupados) for x in durante)
         siguen = bool(final) and all((final[-1].get(p) or 0) > 0.3 for p in ocupados)
@@ -1078,7 +1090,7 @@ if (not SOLO or "prep_previa" in SOLO) and hasattr(c, "_ex_preparar_por_tandas")
         # 3) el video (CREAR VIDEO) debe encontrar TODAS las fotos ya preparadas y salir bien
         del REGISTRO[:]
         t1 = time.time()
-        r = c.crear_presentacion_express(list(items), dict(v), 1280, 720, FPS, carpeta_salida=carpeta("prep_previa"), nombre="prep_previa")
+        r = CREAR_EXPRESS(list(items), dict(v), 1280, 720, FPS, carpeta_salida=carpeta("prep_previa"), nombre="prep_previa")
         res["video_s"] = round(time.time() - t1, 1)
         de_cache = [m for _n, m in REGISTRO if "salieron de la caché" in m]
         print("  video en %.1f s · %s" % (res["video_s"], de_cache[0][:140] if de_cache else "NINGUNA foto salió de la caché"))
@@ -1089,6 +1101,104 @@ if (not SOLO or "prep_previa" in SOLO) and hasattr(c, "_ex_preparar_por_tandas")
     except Exception as e:
         traceback.print_exc()
         res["fallas"].append("%s: %s" % (type(e).__name__, str(e)[:300]))
+    _cerrar(res, t0)
+
+if (not SOLO or "soltar" in SOLO) and hasattr(c, "_crear_clases_qt"):   # (9.72) soltar una carpeta en cualquier parte
+    res, t0 = _resultado("soltar")
+    from PySide6 import QtCore, QtGui, QtWidgets
+    from PySide6.QtCore import Qt
+    exec_dlg, exec_msg = QtWidgets.QDialog.exec, QtWidgets.QMessageBox.exec
+    QtWidgets.QDialog.exec = lambda self, *a, **k: 0         # con datos nuevos se abre solo el asistente (modal): nadie lo cierra
+    QtWidgets.QMessageBox.exec = lambda self, *a, **k: 0
+    try:
+        app, v = _ventana_prueba()
+        if not hasattr(v, "_soltar_ventana"):
+            raise RuntimeError("esta versión no tiene _SoltarEnVentana")
+        d = carpeta("material_soltar")
+        fotos_camara(d, 900, 3, 800, 600)
+        RECIB = []
+        _recibir = v._recibir_archivos
+        v._recibir_archivos = lambda rutas: RECIB.append(list(rutas))
+
+        def mime():
+            m = QtCore.QMimeData()
+            m.setUrls([QtCore.QUrl.fromLocalFile(d)])
+            m.setText(d)                                  # el Finder también manda el texto: los campos lo aceptan
+            return m
+
+        def soltar(qw, x, y, mod=Qt.KeyboardModifier.NoModifier):
+            """Como lo manda la plataforma (Finder): por la QWindow, que lo reparte al control de abajo."""
+            antes, acc = len(RECIB), Qt.DropAction.CopyAction | Qt.DropAction.MoveAction | Qt.DropAction.LinkAction
+            p, m = QtCore.QPoint(x, y), mime()             # m vivo hasta el final: el evento no se queda con él
+            en = QtGui.QDragEnterEvent(p, acc, m, Qt.MouseButton.LeftButton, mod)
+            QtWidgets.QApplication.sendEvent(qw, en)
+            mv = QtGui.QDragMoveEvent(p, acc, m, Qt.MouseButton.LeftButton, mod)
+            if en.isAccepted():
+                mv.setDropAction(en.dropAction())
+                mv.accept()
+            QtWidgets.QApplication.sendEvent(qw, mv)
+            if not mv.isAccepted():
+                QtWidgets.QApplication.sendEvent(qw, QtGui.QDragLeaveEvent())
+                return None, False
+            dr = QtGui.QDropEvent(QtCore.QPointF(p), acc, m, Qt.MouseButton.LeftButton, mod)
+            QtWidgets.QApplication.sendEvent(qw, dr)
+            app.processEvents()
+            return dr.dropAction(), len(RECIB) > antes
+
+        for modo in ("simple", "avanzado"):
+            v._mostrar_modo(modo)
+            _esperar(app, 0.6)
+            textos = dict((id(w), w.text()) for w in v.findChildren(QtWidgets.QLineEdit))
+            malos, total = {}, 0
+            for y in range(14, v.height() - 6, 50):
+                for x in range(14, v.width() - 6, 50):
+                    total += 1
+                    if not soltar(v.windowHandle(), x, y)[1]:
+                        w = v.childAt(x, y)
+                        n = type(w).__name__ if w is not None else "(ventana)"
+                        malos[n] = malos.get(n, 0) + 1
+            cambiados = sum(1 for w in v.findChildren(QtWidgets.QLineEdit) if textos.get(id(w)) != w.text())
+            print("  modo %-8s %d de %d puntos cargan la carpeta%s · campos de texto cambiados: %d" % (
+                modo, total - sum(malos.values()), total, (" (fallan: %s)" % malos) if malos else "", cambiados))
+            if malos or cambiados:
+                res["fallas"].append("modo %s: %d puntos no cargan la carpeta %s, %d campos cambiados" % (
+                    modo, sum(malos.values()), malos, cambiados))
+        accion, ok = soltar(v.windowHandle(), 300, 300, Qt.KeyboardModifier.ShiftModifier)
+        if not ok or accion != Qt.DropAction.CopyAction:
+            res["fallas"].append("con Mayús no quedó como copia: %s" % accion)
+
+        def local(nombre, metodo):
+            f = metodo.__func__
+            return f.__closure__[f.__code__.co_freevars.index(nombre)].cell_contents
+        asis = local("DialogoAsistente", v.abrir_asistente)(v)
+        asis.d.show()
+        _esperar(app, 0.5)
+        a_ok = sum(1 for y in range(20, asis.d.height() - 10, 90) for x in range(20, asis.d.width() - 10, 90)
+                   if soltar(asis.d.windowHandle(), x, y)[1])
+        a_tot = len(range(20, asis.d.height() - 10, 90)) * len(range(20, asis.d.width() - 10, 90))
+        asis.d.close()
+        listo = local("DialogoListo", v._avisar_fin)(v, "Video listo", "Prueba", None, d, [])
+        listo.mostrar()
+        _esperar(app, 0.8)
+        _acc, l_ok = soltar(listo.d.windowHandle(), listo.d.width() // 2, listo.d.height() // 2)
+        _esperar(app, 0.5)
+        print("  asistente: %d de %d puntos · «Video listo»: %s" % (a_ok, a_tot, "carga la carpeta" if l_ok else "NO la carga"))
+        if a_ok != a_tot:
+            res["fallas"].append("asistente: %d de %d puntos" % (a_ok, a_tot))
+        if not l_ok:
+            res["fallas"].append("«Video listo» no recibe la carpeta")
+        v._recibir_archivos = _recibir
+        soltar(v.windowHandle(), 400, 400)
+        _esperar(app, 2.5)
+        print("  carga real: %s · %s" % (os.path.basename(v.ruta or ""), v.conteo))
+        if os.path.normcase(os.path.abspath(v.ruta or "")) != os.path.normcase(os.path.abspath(d)) or v.conteo[0] != 3:
+            res["fallas"].append("la carpeta soltada no se cargó: %s %s" % (v.ruta, v.conteo))
+        v.close()
+    except Exception as e:
+        traceback.print_exc()
+        res["fallas"].append("%s: %s" % (type(e).__name__, str(e)[:300]))
+    finally:
+        QtWidgets.QDialog.exec, QtWidgets.QMessageBox.exec = exec_dlg, exec_msg
     _cerrar(res, t0)
 
 texto = informe(INFO, time.time() - T_INICIO)
