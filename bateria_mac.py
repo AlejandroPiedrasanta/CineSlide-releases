@@ -648,6 +648,375 @@ if not SOLO or "interfaz" in SOLO:
                                                                   res.get("ventanas_modales") or "ninguna", res["fallas"]))
     anotar(res)
 
+# ------------------------------------------------------------------------------------------------ (9.71) lo nuevo de la 9.71
+def _resultado(nombre):
+    print("\n" + "=" * 100 + "\n## " + nombre)
+    empezar(nombre)
+    return {"escenario": nombre, "archivos": 0, "formato": "-", "ok": False, "fallas": []}, time.time()
+
+
+def _cerrar(res, t0, detalle=""):
+    res["ok"] = not res["fallas"]
+    res["segundos"] = round(time.time() - t0, 1)
+    print("  %s en %.1f s %s %s" % ("OK" if res["ok"] else "FALLA", res["segundos"], detalle, res["fallas"] or ""))
+    anotar(res)
+
+
+def _diferencia(a, b):
+    """(diferencia máxima de color, canales con más de 3 niveles) entre dos QImage del mismo tamaño (sin numpy)."""
+    from PySide6 import QtCore, QtGui
+
+    def opaca(img):                                  # sobre negro: los bordes semitransparentes (esquinas) comparan bien
+        o = QtGui.QImage(img.width(), img.height(), QtGui.QImage.Format.Format_RGB32)
+        o.fill(QtGui.QColor(0, 0, 0))
+        q = QtGui.QPainter(o)
+        q.drawImage(QtCore.QRect(0, 0, img.width(), img.height()), img)
+        q.end()
+        return o
+    d = opaca(a)
+    p = QtGui.QPainter(d)
+    p.setCompositionMode(QtGui.QPainter.CompositionMode.CompositionMode_Difference)
+    p.drawImage(0, 0, opaca(b))
+    p.end()
+    rgb = d.convertToFormat(QtGui.QImage.Format.Format_RGB888)
+    datos = bytes(rgb.constBits())[:rgb.bytesPerLine() * rgb.height()]
+    return (max(datos) if datos else 0), datos.translate(bytes(0 if i <= 3 else 1 for i in range(256))).count(1)
+
+
+def _ventana_prueba():
+    """La ventana principal real (sin pantalla), sin licencia ni diálogos que esperen a alguien."""
+    from PySide6 import QtWidgets
+    app = QtWidgets.QApplication.instance() or QtWidgets.QApplication(["CineSlide"])
+    app.setQuitOnLastWindowClosed(False)              # se abren y cierran varias ventanas en la misma batería
+    c.licencia_vigente = lambda: True
+    Ventana = c._crear_clases_qt()
+    Ventana._licencia_revisar = lambda self, *a, **k: None
+    v = Ventana(c._ProxyPrincipal())
+    v._licencia_pedir = lambda *a, **k: True
+    v._licencia_lista = lambda *a, **k: True
+    v._sin_intro = True
+    v.resize(1400, 900)
+    v.show()
+    app.processEvents()
+    return app, v
+
+
+def _esperar(app, seg):
+    from PySide6 import QtCore
+    bucle = QtCore.QEventLoop()
+    QtCore.QTimer.singleShot(int(seg * 1000), bucle.quit)
+    bucle.exec()
+
+
+_PRUEBA_C = r"""
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+int main(int argc, char **argv) {
+    volatile unsigned long x = 0;
+    if (argc > 1 && strcmp(argv[1], "quieta") == 0) { sleep(900); return 0; }
+    if (argc > 1 && strcmp(argv[1], "con_hijo") == 0) { if (fork() == 0) { for (;;) x++; } }
+    for (;;) x++;
+}
+"""
+
+
+def _apps_de_prueba(d):
+    """Procesos de prueba que parecen aplicaciones: en Mac una app .app compilada (ocupada, ocupada con un hijo, quieta); en
+    Windows el Python de CineSlide. Se lanzan SUELTAS (a través de un shell que termina enseguida): los hijos de CineSlide nunca
+    se pausan. Devuelve {tipo: pid}, los pid ocupados (con el del hijo) y el pid quieto."""
+    if MAC:
+        exe = os.path.join(d, "Prueba Ocupada.app", "Contents", "MacOS", "Prueba Ocupada")
+        os.makedirs(os.path.dirname(exe), exist_ok=True)
+        fuente = os.path.join(d, "prueba.c")
+        with open(fuente, "w") as f:
+            f.write(_PRUEBA_C)
+        p = correr(["cc", "-O0", "-o", exe, fuente])
+        if p.returncode:
+            raise RuntimeError("no se pudo compilar la app de prueba: %s" % p.stderr.decode("utf-8", "replace")[-300:])
+        ordenes = {"ocupada": [exe], "con_hijo": [exe, "con_hijo"], "quieta": [exe, "quieta"]}
+    else:
+        exe = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+        exe = exe if os.path.isfile(exe) else sys.executable
+        ordenes = {"ocupada": [exe, "-c", "while True: pass"],
+                   "con_hijo": [exe, "-c", "import subprocess, sys; subprocess.Popen([sys.executable, '-c', 'while True: pass']); "
+                                           "exec('while True: pass')"],
+                   "quieta": [exe, "-c", "import time; time.sleep(900)"]}
+    lanzar = ("import subprocess, sys; print(subprocess.Popen(sys.argv[1:], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, "
+              "stderr=subprocess.DEVNULL, **({'start_new_session': True} if sys.platform == 'darwin' else {'creationflags': 8})).pid)")
+    pids = dict((tipo, int(correr([sys.executable, "-c", lanzar] + o).stdout.decode().strip())) for tipo, o in ordenes.items())
+    time.sleep(1.5)
+    m, padres = c._pausa_muestra()
+    rutas = dict((k[0], v[3]) for k, v in m.items())
+    hijo = [pid for pid, pp in padres.items() if pp == pids["con_hijo"] and "conhost" not in rutas.get(pid, "").lower()]
+    return pids, [pids["ocupada"], pids["con_hijo"]] + hijo[:1], pids["quieta"]
+
+
+def _uso(pids, seg=1.0):
+    """Núcleos que usó cada pid en 'seg' segundos (None si ya no está)."""
+    a = dict((k[0], v[0]) for k, v in c._pausa_muestra()[0].items() if k[0] in pids)
+    time.sleep(seg)
+    b = dict((k[0], v[0]) for k, v in c._pausa_muestra()[0].items() if k[0] in pids)
+    return dict((p, round((b[p] - a[p]) / seg, 2) if p in a and p in b else None) for p in pids)
+
+
+def _detenidos(pids):
+    """Mac: pid que ps muestra detenidos (estado T)."""
+    if not MAC:
+        return set()
+    txt = correr(["ps", "-o", "pid=,stat=", "-p", ",".join(str(p) for p in pids)]).stdout.decode()
+    return set(int(x.split()[0]) for x in txt.splitlines() if len(x.split()) > 1 and "T" in x.split()[1])
+
+
+if not SOLO or "fondo_zonas" in SOLO:        # (9.71) el fondo por zonas da lo mismo que rehacerlo entero, en los 4 diseños
+    res, t0 = _resultado("fondo_zonas")
+    try:
+        app, v = _ventana_prueba()
+        if v.__dict__.get("_reloj_fondo"):
+            v._reloj_fondo.stop()
+        D = c.diseno_ui()
+        fondo_orig = D["fondo"]
+        res["fondos"] = {}
+        for fondo in ("aurora", "grano", "petalos", "rejilla"):
+            D["fondo"] = fondo
+            v._cuadro_clave = None
+            v._fondo_componer(0.0)
+            ms, peor, area = [], 0, 0.0
+            for paso in range(1, 421):                     # 14 s a 30 cuadros/s: barrido, estrella fugaz, hilo de luz, parpadeo
+                t = paso / 30.0
+                v._t_fondo = t
+                t1 = time.time()
+                reg = v._fondo_componer(t)
+                ms.append(1000.0 * (time.time() - t1))
+                if reg is not None and not reg.isEmpty():
+                    area += sum(r.width() * r.height() for r in reg) / float(v.width() * v.height())
+                if paso % 70 == 0:
+                    inc = v._cuadro_img.copy()
+                    v._cuadro_clave = None                 # el mismo instante, rehecho entero
+                    v._fondo_componer(t)
+                    dmax, ncan = _diferencia(inc, v._cuadro_img)
+                    peor = max(peor, dmax)
+                    if dmax > 3:
+                        res["fallas"].append("%s t=%.1f s: el cuadro por zonas difiere del entero (%d niveles, %d canales)" % (
+                            fondo, t, dmax, ncan))
+            ms.sort()
+            res["fondos"][fondo] = {"ms_media": round(sum(ms) / len(ms), 2), "ms_p95": round(ms[int(len(ms) * 0.95)], 2),
+                                    "area_media_pct": round(100.0 * area / 420, 1), "dif_max": peor}
+            print("  %-8s %5.2f ms por cuadro (p95 %5.2f) · repinta %4.1f %% · diferencia máx. %d" % (
+                fondo, res["fondos"][fondo]["ms_media"], res["fondos"][fondo]["ms_p95"], res["fondos"][fondo]["area_media_pct"], peor))
+        D["fondo"] = fondo_orig
+        v._cuadro_clave = None
+        v.close()
+    except Exception as e:
+        traceback.print_exc()
+        res["fallas"].append("%s: %s" % (type(e).__name__, str(e)[:300]))
+    _cerrar(res, t0)
+
+if not SOLO or "pausa_apps" in SOLO:         # (9.71) pausar las demás apps mientras se crea el video (solo las de prueba)
+    res, t0 = _resultado("pausa_apps")
+    procs, ocupados, quieto = {}, [], None
+    try:
+        d = carpeta("pausa_apps")
+        a, b_ = c._pausa_muestra()
+        time.sleep(2.0)
+        b, padres = c._pausa_muestra()
+        propios = c._pausa_propios(padres)
+        seco = sorted(set(c._pausa_app_entera(k, b, padres, propios)[1] for k, x in b.items()
+                          if k in a and k[0] not in propios and (x[0] - a[k][0]) / 2.0 >= c._PAUSA_UMBRAL
+                          and not c._pausa_protegida(x[2], x[3])))
+        res["se_pausarian_en_esta_maquina"] = seco
+        print("  en esta máquina se pausarían ahora: %s" % (", ".join(seco) or "ninguna app"))
+        procs, ocupados, quieto = _apps_de_prueba(d)
+        todos = ocupados + [quieto]
+        c._PAUSA["solo"] = set(todos)                 # SOLO las de prueba
+        antes = _uso(todos)
+        print("  apps de prueba (núcleos): %s" % antes)
+        if any((antes.get(p) or 0) < 0.3 for p in ocupados):
+            res["fallas"].append("las apps de prueba no estaban ocupadas: %s" % antes)
+        avisos = []
+        c.pausa_empezar(aviso=lambda lista: avisos.append(list(lista)))
+        t1 = time.time()
+        while time.time() - t1 < 8 and not set(ocupados) <= set(k[0] for k in c._PAUSA["pausadas"]):
+            time.sleep(0.1)
+        res["pausa_en_s"] = round(time.time() - t1, 1)
+        pausado = _uso(todos)
+        det = _detenidos(todos)
+        print("  pausadas en %.1f s · núcleos: %s · detenidas según ps: %s · aviso: %s" % (res["pausa_en_s"], pausado, sorted(det),
+                                                                                           avisos[-1:] or "-"))
+        if any((pausado.get(p) or 0) > 0.05 for p in ocupados) or (MAC and not set(ocupados) <= det):
+            res["fallas"].append("no quedaron pausadas: %s" % pausado)
+        if quieto in set(k[0] for k in c._PAUSA["pausadas"]):
+            res["fallas"].append("pausó la app quieta (no hacía falta)")
+        if not os.path.isfile(c._pausa_archivo()):
+            res["fallas"].append("no guardó la lista de apps pausadas")
+        vig = c._PAUSA.get("vigilante")
+        if vig is None or vig.poll() is not None:
+            res["fallas"].append("no quedó corriendo el vigilante")
+        nombres = c.pausa_terminar()
+        despues = _uso(todos)
+        print("  reanudadas: %s · núcleos: %s" % (nombres, despues))
+        if any((despues.get(p) or 0) < 0.3 for p in ocupados) or _detenidos(todos):
+            res["fallas"].append("no se reanudaron: %s" % despues)
+        time.sleep(2.0)
+        if os.path.isfile(c._pausa_archivo()) or (vig is not None and vig.poll() is None):
+            res["fallas"].append("quedó el archivo de pausa o el vigilante después de reanudar")
+        # CineSlide se cae de golpe con apps pausadas: el vigilante las reanuda (y, si también cae el vigilante, al abrir CineSlide)
+        guion = ("import os, sys, time, signal, subprocess\nsys.path.insert(0, %r)\nimport CineSlide as c\nc._PAUSA['solo'] = set(%r)\n"
+                 "c.pausa_empezar()\nt = time.time()\nwhile time.time() - t < 8 and not set(%r) <= set(k[0] for k in c._PAUSA['pausadas']):\n"
+                 "    time.sleep(0.1)\nif sys.argv[1] == 'sin_vigilante':\n    v = c._PAUSA['vigilante']\n"
+                 "    os.kill(v.pid, signal.SIGKILL) if hasattr(signal, 'SIGKILL') else subprocess.run(['taskkill', '/F', '/PID', str(v.pid)])\n"
+                 "os._exit(3)\n") % (CARPETA, todos, ocupados)
+        for modo in ("con_vigilante", "sin_vigilante"):
+            p = correr([sys.executable, "-c", guion, modo], timeout=60)
+            time.sleep(2.5)
+            u = _uso(ocupados)
+            vivas = all((u.get(x) or 0) > 0.3 for x in ocupados)
+            if modo == "con_vigilante":
+                print("  CineSlide se cae: el vigilante las reanudó: %s (%s)" % (vivas, u))
+                if not vivas:
+                    res["fallas"].append("tras caerse CineSlide el vigilante no reanudó las apps: %s" % u)
+            else:
+                print("  cae también el vigilante: siguen pausadas: %s (%s)" % (not vivas, u))
+                n = c.pausa_rescatar()                  # lo que hace CineSlide al abrir
+                u2 = _uso(ocupados)
+                print("  al abrir CineSlide se reanudaron %d: %s" % (n, u2))
+                if not all((u2.get(x) or 0) > 0.3 for x in ocupados):
+                    res["fallas"].append("al abrir CineSlide no se reanudaron las apps: %s" % u2)
+        # CREAR VIDEO de verdad (la ventana): pausa durante el video y siguen al terminar
+        from PySide6 import QtWidgets
+        exec_orig = QtWidgets.QDialog.exec
+        QtWidgets.QDialog.exec = lambda self, *a, **k: 0
+        c.abrir_en_explorador = lambda *a, **k: None
+        app, v = _ventana_prueba()
+        v._avisar_fin = lambda *a, **k: None
+        crear = v.principal.crear_presentacion_express
+        v.principal.crear_presentacion_express = lambda *a, **k: crear(*a, carpeta_salida=carpeta("pausa_video"), **k)
+        dv = carpeta("material_pausa_video")
+        for i, f in enumerate(POZO[:3]):
+            with open(f, "rb") as fo, open(os.path.join(dv, "foto_%d.jpg" % i), "wb") as fd:
+                fd.write(fo.read())
+        v.ruta, v.archivos_manual, v.seleccion = dv, None, None
+        v._aplicar_origen()
+        _esperar(app, 3.0)
+        linea, fin_m = [], [False]
+
+        def mirar():
+            while not fin_m[0]:
+                linea.append((time.time(), _uso(ocupados, 0.5)))
+        import threading
+        hilo = threading.Thread(target=mirar, daemon=True)
+        hilo.start()
+        t_v = time.time()
+        v.ejecutar()
+        t_f = time.time()
+        time.sleep(1.5)
+        fin_m[0] = True
+        hilo.join(5)
+        durante = [u for t, u in linea if t_v + 3.0 < t < t_f - 0.5]
+        final = [u for t, u in linea if t > t_f + 0.6]
+        quieto_ok = all(all((x.get(p) or 0) < 0.05 for p in ocupados) for x in durante)
+        siguen = bool(final) and all((final[-1].get(p) or 0) > 0.3 for p in ocupados)
+        estado = (v.__dict__.get("_estado_ult") or ("", ""))[0]
+        res["video_s"] = round(t_f - t_v, 1)
+        print("  CREAR VIDEO: %.1f s · pausadas durante el video: %s (%d muestras) · siguieron: %s · aviso: %s" % (
+            t_f - t_v, quieto_ok, len(durante), siguen, estado[-140:]))
+        if not durante or not quieto_ok:
+            res["fallas"].append("durante CREAR VIDEO las apps no quedaron pausadas: %s" % durante[:3])
+        if not siguen:
+            res["fallas"].append("después de CREAR VIDEO las apps no siguieron: %s" % final[-1:])
+        if "siguieron" not in estado and "siguió" not in estado:
+            res["fallas"].append("el aviso final no dice que las apps siguieron: %s" % estado[-200:])
+        if not os.listdir(carpeta("pausa_video")):
+            res["fallas"].append("CREAR VIDEO no dejó el video")
+        v.close()
+        QtWidgets.QDialog.exec = exec_orig
+    except Exception as e:
+        traceback.print_exc()
+        res["fallas"].append("%s: %s" % (type(e).__name__, str(e)[:300]))
+    finally:
+        c._PAUSA["solo"] = None
+        try:
+            c.pausa_terminar()
+        except Exception:
+            pass
+        for pid in ocupados + ([quieto] if quieto else []):
+            try:
+                if MAC:
+                    import signal
+                    os.kill(pid, signal.SIGCONT)
+                    os.kill(pid, signal.SIGKILL)
+                else:
+                    correr(["taskkill", "/F", "/T", "/PID", str(pid)])
+            except Exception:
+                pass
+    _cerrar(res, t0)
+
+if not SOLO or "ocasion" in SOLO:            # (9.71) detector boda / XV: por el nombre y por el color, en tandas de 8 fotos
+    res, t0 = _resultado("ocasion")
+    try:
+        for ruta, esperado in (("/x/Boda Ana y Luis", "Boda"), ("/x/XV Sofía", "XV años"), ("/x/Mis 15 años", "XV años"),
+                               ("/x/Fiesta", None), ("/x/BODAS & XV RECURSOS", None)):
+            r = c.ocasion_por_nombre(ruta, [])
+            if (r[0] if r else None) != esperado:
+                res["fallas"].append("por el nombre «%s»: %s (se esperaba %s)" % (ruta, r, esperado))
+        d = carpeta("material_ocasion")
+        # 'vestido' que llena casi toda la foto: blanco (boda) o lila (XV), con grano para que no sea un color plano
+        juegos = {"Boda": "color=c=0xF4F2F0:s=1200x800,noise=alls=6:allf=t",
+                  "XV años": "color=c=0xB98AD8:s=1200x800,noise=alls=6:allf=t"}
+        for esperado, fuente in juegos.items():
+            fotos = [imagen(os.path.join(d, "%s_%02d.jpg" % (esperado[:2], i)),
+                            fuente + ",drawbox=x=%d:y=40:w=260:h=720:color=0x5a3a28@1:t=fill" % (60 + 80 * i), "-q:v", "3")
+                     for i in range(12)]
+            fotos = [f for f in fotos if f]
+            t1 = time.time()
+            oc, motivo, n = c.ocasion_por_fotos(fotos)
+            seg = time.time() - t1
+            print("  fotos de %-8s -> %-8s en %.2f s mirando %d fotos (%s)" % (esperado, oc, seg, n, motivo))
+            if oc != esperado:
+                res["fallas"].append("fotos de %s: detectó %s (%s)" % (esperado, oc, motivo))
+            if n > 8:
+                res["fallas"].append("fotos de %s: no decidió con la primera tanda de 8 (miró %d)" % (esperado, n))
+            if seg > 3.0:
+                res["fallas"].append("fotos de %s: tardó %.1f s" % (esperado, seg))
+        oc, motivo, n = c.ocasion_por_fotos(POZO)
+        print("  fotos sin vestido (degradados) -> %s (%s, %d fotos)" % (oc, motivo, n))
+    except Exception as e:
+        traceback.print_exc()
+        res["fallas"].append("%s: %s" % (type(e).__name__, str(e)[:300]))
+    _cerrar(res, t0)
+
+if not SOLO or "musica_971" in SOLO:         # (9.71) canciones propias en Boda / XV y escuchar con doble clic (afplay en Mac)
+    res, t0 = _resultado("musica_971")
+    try:
+        d = carpeta("material_musica_971")
+        propia = cancion(os.path.join(d, "Mi canción de quince.mp3"), 8)
+        if not c.musica_propia_poner(propia, "Quince años", True):
+            res["fallas"].append("no se pudo poner la canción propia en XV años")
+        cats = c.musica_categorias_de(propia)
+        en_bib = any(os.path.normcase(os.path.abspath(r)) == os.path.normcase(os.path.abspath(propia))
+                     for cat, rs in c.musica_biblioteca() if cat == "Quince años" for r in rs)
+        print("  categorías de la propia: %s · está en la biblioteca de XV años: %s" % (cats, en_bib))
+        if "Quince años" not in cats or not en_bib:
+            res["fallas"].append("la canción propia no quedó en XV años: %s" % cats)
+        c.musica_propia_poner(propia, "Quince años", False)
+        if "Quince años" in c.musica_categorias_de(propia):
+            res["fallas"].append("no se pudo quitar la canción propia de XV años")
+        ok = c.audio_reproducir(propia)
+        time.sleep(0.8)
+        sonando = c.audio_sonando()
+        c.audio_detener()
+        time.sleep(0.3)
+        res["sonido"] = "sonó" if sonando else ("el reproductor no siguió (¿sin salida de audio en la máquina?)" if ok else "no arrancó")
+        print("  doble clic (reproducir): %s · sonando: %s · después de detener: %s" % (ok, sonando, c.audio_sonando()))
+        if MAC and not ok:
+            res["fallas"].append("en Mac no se pudo lanzar afplay")
+        if c.audio_sonando():
+            res["fallas"].append("la canción siguió sonando después de detenerla")
+    except Exception as e:
+        traceback.print_exc()
+        res["fallas"].append("%s: %s" % (type(e).__name__, str(e)[:300]))
+    _cerrar(res, t0)
+
 texto = informe(INFO, time.time() - T_INICIO)
 print("\n" + texto)
 sys.stdout.flush()
