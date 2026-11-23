@@ -1120,16 +1120,17 @@ if (not SOLO or "soltar" in SOLO) and hasattr(c, "_crear_clases_qt"):   # (9.72)
         _recibir = v._recibir_archivos
         v._recibir_archivos = lambda rutas: RECIB.append(list(rutas))
 
-        def mime():
+        def mime(rutas=None):
+            rutas = rutas or [d]
             m = QtCore.QMimeData()
-            m.setUrls([QtCore.QUrl.fromLocalFile(d)])
-            m.setText(d)                                  # el Finder también manda el texto: los campos lo aceptan
+            m.setUrls([QtCore.QUrl.fromLocalFile(r) for r in rutas])
+            m.setText(rutas[0])                           # el Finder también manda el texto: los campos lo aceptan
             return m
 
-        def soltar(qw, x, y, mod=Qt.KeyboardModifier.NoModifier):
+        def soltar(qw, x, y, mod=Qt.KeyboardModifier.NoModifier, rutas=None):
             """Como lo manda la plataforma (Finder): por la QWindow, que lo reparte al control de abajo."""
             antes, acc = len(RECIB), Qt.DropAction.CopyAction | Qt.DropAction.MoveAction | Qt.DropAction.LinkAction
-            p, m = QtCore.QPoint(x, y), mime()             # m vivo hasta el final: el evento no se queda con él
+            p, m = QtCore.QPoint(x, y), mime(rutas)        # m vivo hasta el final: el evento no se queda con él
             en = QtGui.QDragEnterEvent(p, acc, m, Qt.MouseButton.LeftButton, mod)
             QtWidgets.QApplication.sendEvent(qw, en)
             mv = QtGui.QDragMoveEvent(p, acc, m, Qt.MouseButton.LeftButton, mod)
@@ -1157,12 +1158,17 @@ if (not SOLO or "soltar" in SOLO) and hasattr(c, "_crear_clases_qt"):   # (9.72)
                         w = v.childAt(x, y)
                         n = type(w).__name__ if w is not None else "(ventana)"
                         malos[n] = malos.get(n, 0) + 1
-            cambiados = sum(1 for w in v.findChildren(QtWidgets.QLineEdit) if textos.get(id(w)) != w.text())
-            print("  modo %-8s %d de %d puntos cargan la carpeta%s · campos de texto cambiados: %d" % (
-                modo, total - sum(malos.values()), total, (" (fallan: %s)" % malos) if malos else "", cambiados))
+            # un campo cambiado solo cuenta si quedó la RUTA soltada en él (otros pueden cambiar solos mientras tanto: la
+            # ventana termina de abrir, se calcula la música...)
+            dif = [(type(w.parent()).__name__, textos.get(id(w)), w.text()) for w in v.findChildren(QtWidgets.QLineEdit)
+                   if textos.get(id(w)) != w.text()]
+            cambiados = [x for x in dif if os.path.normcase(d) in os.path.normcase(x[2] or "")]
+            print("  modo %-8s %d de %d puntos cargan la carpeta%s · campos con la ruta pegada: %d%s" % (
+                modo, total - sum(malos.values()), total, (" (fallan: %s)" % malos) if malos else "", len(cambiados),
+                (" · otros campos que cambiaron: %s" % [(p, a[:40] if a else a, n[:40]) for p, a, n in dif]) if dif else ""))
             if malos or cambiados:
-                res["fallas"].append("modo %s: %d puntos no cargan la carpeta %s, %d campos cambiados" % (
-                    modo, sum(malos.values()), malos, cambiados))
+                res["fallas"].append("modo %s: %d puntos no cargan la carpeta %s, %d campos con la ruta pegada" % (
+                    modo, sum(malos.values()), malos, len(cambiados)))
         accion, ok = soltar(v.windowHandle(), 300, 300, Qt.KeyboardModifier.ShiftModifier)
         if not ok or accion != Qt.DropAction.CopyAction:
             res["fallas"].append("con Mayús no quedó como copia: %s" % accion)
@@ -1193,6 +1199,37 @@ if (not SOLO or "soltar" in SOLO) and hasattr(c, "_crear_clases_qt"):   # (9.72)
         print("  carga real: %s · %s" % (os.path.basename(v.ruta or ""), v.conteo))
         if os.path.normcase(os.path.abspath(v.ruta or "")) != os.path.normcase(os.path.abspath(d)) or v.conteo[0] != 3:
             res["fallas"].append("la carpeta soltada no se cargó: %s %s" % (v.ruta, v.conteo))
+        if hasattr(c, "musica_agregar_soltadas"):          # (9.73) la música soltada se AGREGA, encendida y antes de las incluidas
+            nrm = lambda x: os.path.normcase(os.path.abspath(x))
+            incl = set(nrm(r) for _c, rs in c.musica_biblioteca(propias=False) for r in rs)
+
+            def antes_de_incluidas(lista, omit, r):
+                apag = set(nrm(x) for x in omit)
+                prim = next((i for i, x in enumerate(lista) if nrm(x) in incl and nrm(x) not in apag), len(lista))
+                pos = [i for i, x in enumerate(lista) if nrm(x) == nrm(r)]
+                return len(pos) == 1 and pos[0] < prim and nrm(r) not in apag
+            s1, s2 = cancion(os.path.join(d, "Mi cancion.mp3"), 4), cancion(os.path.join(d, "Otra cancion.mp3"), 4)
+            n_ant = len(v.musica.get("lista") or [])
+            soltar(v.windowHandle(), 500, 400, rutas=[s1])
+            _esperar(app, 0.3)
+            ok1 = antes_de_incluidas(v.musica.get("lista") or [], v.musica.get("omitidas") or [], s1)
+            print("  canción soltada en la ventana: %d -> %d canciones · suena antes de las incluidas: %s" % (
+                n_ant, len(v.musica.get("lista") or []), ok1))
+            if not ok1 or len(v.musica.get("lista") or []) != n_ant + 1:
+                res["fallas"].append("la canción soltada en la ventana no se agregó bien")
+            f = v.elegir_musica.__func__
+            dm = f.__closure__[f.__code__.co_freevars.index("DialogoMusica")].cell_contents(
+                v, v.musica, v._pedir_archivos_musica, v._datos_presentacion_musica)
+            dm.d.show()
+            _esperar(app, 0.6)
+            pts = [(x, y) for y in range(20, dm.d.height() - 10, 120) for x in range(20, dm.d.width() - 10, 120)]
+            acept = sum(1 for x, y in pts if soltar(dm.d.windowHandle(), x, y, rutas=[s2])[0] is not None)
+            ok2 = antes_de_incluidas(dm._leer_lista(), [r for r in dm._leer_lista() if r in dm.omit], s2)
+            print("  ventana Música: %d de %d puntos aceptan la canción · queda una vez, encendida y antes de las incluidas: %s" % (
+                acept, len(pts), ok2))
+            if acept != len(pts) or not ok2:
+                res["fallas"].append("ventana Música: %d de %d puntos, bien ubicada: %s" % (acept, len(pts), ok2))
+            dm.d.close()
         v.close()
     except Exception as e:
         traceback.print_exc()
