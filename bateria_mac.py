@@ -1017,6 +1017,80 @@ if not SOLO or "musica_971" in SOLO:         # (9.71) canciones propias en Boda 
         res["fallas"].append("%s: %s" % (type(e).__name__, str(e)[:300]))
     _cerrar(res, t0)
 
+def _descendientes(pid):
+    """pid de los hijos, nietos... de pid (como los ve la pausa de apps: Windows y Mac)."""
+    _m, padres = c._pausa_muestra()
+    hijos, pend = set(), [pid]
+    while pend:
+        p = pend.pop()
+        for h, pp in padres.items():
+            if pp == p and h not in hijos:
+                hijos.add(h)
+                pend.append(h)
+    return hijos
+
+
+if (not SOLO or "prep_previa" in SOLO) and hasattr(c, "_ex_preparar_por_tandas"):   # (9.72) preparación previa
+    res, t0 = _resultado("prep_previa")
+    try:
+        d = carpeta("material_prep_previa")
+        fotos = fotos_camara(d, 700, 8)
+        items = [(f, False) for f in fotos]
+        v = dict(BASE)
+        v.update({"formato_video": HORIZONTAL, "express_resolucion": "720p", "t_segundos_por_foto": 2.0, "t1_segundos_por_foto": 2.0,
+                  "carpeta_exportacion": carpeta("prep_previa"), "incluir_videos": True})
+        script = os.path.join(CARPETA, "CineSlide.py")
+        lanzar = dict(stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                      env=dict(os.environ, PYTHONIOENCODING="utf-8"), **({"start_new_session": True} if MAC else {}))
+
+        def json_prep(variables, nombre):
+            ruta = os.path.join(d, nombre)
+            with open(ruta, "w", encoding="utf-8") as f:
+                json.dump({"items": [list(x) for x in items], "variables": variables, "W": 1280, "H": 720, "fps": FPS}, f, default=str)
+            return ruta
+        # 1) cortarla a medias (como CREAR VIDEO o un cambio de ajustes): no deben quedar sus ffmpeg sueltos
+        otro = dict(v, estilo_diseno=TEMAS[1] if len(TEMAS) > 1 else v.get("estilo_diseno"))
+        p = subprocess.Popen([sys.executable, script, "--preparar", json_prep(otro, "cortar.json")], **lanzar)
+        time.sleep(4.0)
+        hijos = _descendientes(p.pid)
+        if MAC:
+            import signal
+            os.killpg(p.pid, signal.SIGKILL)
+        else:
+            correr(["taskkill", "/T", "/F", "/PID", str(p.pid)])
+        p.wait()
+        time.sleep(1.0)
+        vivos = hijos & set(k[0] for k in c._pausa_muestra()[0])
+        print("  cortada a los 4 s: %d procesos suyos; quedaron vivos: %d" % (len(hijos), len(vivos)))
+        if vivos:
+            res["fallas"].append("al cortar la preparación previa quedaron %d procesos sueltos" % len(vivos))
+        # 2) completa, en otro proceso con prioridad baja (como la lanza la ventana)
+        t1 = time.time()
+        p = subprocess.run([sys.executable, script, "--preparar", json_prep(v, "preparar.json")], timeout=900,
+                           **dict((k, x) for k, x in lanzar.items() if k != "start_new_session"))
+        salida_p = p.stdout.decode("utf-8", "replace")
+        linea = [x for x in salida_p.splitlines() if x.startswith("PREPARADO ")]
+        info = json.loads(linea[-1][10:]) if linea else {}
+        res["previa_s"] = round(time.time() - t1, 1)
+        print("  preparación previa: código %s en %.1f s -> %s" % (p.returncode, res["previa_s"], info or salida_p[-400:]))
+        if p.returncode or (info.get("preparadas") or 0) + (info.get("de_cache") or 0) != len(items) or info.get("fallidas"):
+            res["fallas"].append("la preparación previa no preparó las %d fotos: %s" % (len(items), info or salida_p[-300:]))
+        # 3) el video (CREAR VIDEO) debe encontrar TODAS las fotos ya preparadas y salir bien
+        del REGISTRO[:]
+        t1 = time.time()
+        r = c.crear_presentacion_express(list(items), dict(v), 1280, 720, FPS, carpeta_salida=carpeta("prep_previa"), nombre="prep_previa")
+        res["video_s"] = round(time.time() - t1, 1)
+        de_cache = [m for _n, m in REGISTRO if "salieron de la caché" in m]
+        print("  video en %.1f s · %s" % (res["video_s"], de_cache[0][:140] if de_cache else "NINGUNA foto salió de la caché"))
+        if not de_cache or not de_cache[0].strip().split()[1].isdigit() or int(de_cache[0].split()[1]) != len(items):
+            res["fallas"].append("el video no usó lo preparado: %s" % (de_cache[:1] or "nada de la caché"))
+        comprobaciones, _dv = revisar_mp4(r["ruta"], False, False, (1280, 720))
+        res["fallas"] += [texto for ok, texto, _n in comprobaciones if not ok]
+    except Exception as e:
+        traceback.print_exc()
+        res["fallas"].append("%s: %s" % (type(e).__name__, str(e)[:300]))
+    _cerrar(res, t0)
+
 texto = informe(INFO, time.time() - T_INICIO)
 print("\n" + texto)
 sys.stdout.flush()
