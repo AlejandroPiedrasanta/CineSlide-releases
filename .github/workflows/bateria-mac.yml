@@ -54,18 +54,35 @@ jobs:
         run: |
           sw_vers
           mkdir -p work && cd work
+          bajar() {   # $1 = tag (vacío = el último): el DMG (9.58+) o, en Releases viejos, el .zip con el .command
+            gh release download $1 --repo "$GITHUB_REPOSITORY" --pattern "*Mac_${{ matrix.zip }}.dmg" 2>/dev/null ||
+              gh release download $1 --repo "$GITHUB_REPOSITORY" --pattern "*Mac_${{ matrix.zip }}.zip" 2>/dev/null
+          }
+          if ! bajar $TAG; then
+            # (9.75) desde la 9.72 los Release no traen DMG de Intel (regla del usuario): el instalador del último Release que lo
+            # tenga + el CineSlide.py de este Release (como probar-mac.yml). Antes las 2 Macs Intel fallaban aquí siempre.
+            gh release download $TAG --repo "$GITHUB_REPOSITORY" --pattern CineSlide.py --output CineSlide_release.py
+            for t in $(gh release list --repo "$GITHUB_REPOSITORY" --limit 30 --exclude-drafts --exclude-pre-releases --json tagName --jq '.[].tagName'); do
+              if bajar "$t"; then
+                echo "Instalador de $t + CineSlide.py de ${TAG:-el último Release}"; break
+              fi
+            done
+          fi
           # (9.58) el DMG (la app "Instalar CineSlide" con su paquete) o, en Releases viejos, el .zip con el .command
-          if gh release download $TAG --repo "$GITHUB_REPOSITORY" --pattern "*Mac_${{ matrix.zip }}.dmg" 2>/dev/null; then
+          if ls *.dmg >/dev/null 2>&1; then
             mnt=$(hdiutil attach -nobrowse -readonly *.dmg | grep -o '/Volumes/.*$' | head -1)
             RES="$mnt/Instalar CineSlide.app/Contents/Resources"
             CINESLIDE_CI=1 CINESLIDE_PAQUETE="$RES/paquete" bash "$RES/instalar_mac.sh" > instalacion.log 2>&1 || { tail -60 instalacion.log; exit 1; }
             hdiutil detach "$mnt"
           else
-            gh release download $TAG --repo "$GITHUB_REPOSITORY" --pattern "*Mac_${{ matrix.zip }}.zip"
             unzip -q Instalar_CineSlide_v*_Mac_${{ matrix.zip }}.zip
             CINESLIDE_CI=1 bash "$(ls -d CineSlide*/ | head -1)Instalar CineSlide.command" > instalacion.log 2>&1 || { tail -60 instalacion.log; exit 1; }
           fi
           tail -3 instalacion.log
+          if [ -f CineSlide_release.py ]; then
+            cp CineSlide_release.py "$HOME/Library/Application Support/CineSlide/CineSlide.py"
+            grep -m1 '^VERSION_MOTOR' "$HOME/Library/Application Support/CineSlide/CineSlide.py"
+          fi
       - name: Poner el CineSlide.py del borrador
         if: ${{ inputs.borrador != '' }}
         run: |
