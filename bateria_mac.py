@@ -898,7 +898,8 @@ if not SOLO or "pausa_apps" in SOLO:         # (9.71) pausar las demás apps mie
         _terminar = c.pausa_terminar
         c.pausa_terminar = lambda *a, **k: (t_reanuda.append(time.time()), _terminar(*a, **k))[1]
         dv = carpeta("material_pausa_video")
-        for i, f in enumerate(POZO[:3]):
+        # (9.77) 12 fotos: con 3 el video ya tardaba 2,3 s y no quedaba ninguna muestra después de los 3 s de margen
+        for i, f in enumerate((POZO * 4)[:12]):
             with open(f, "rb") as fo, open(os.path.join(dv, "foto_%d.jpg" % i), "wb") as fd:
                 fd.write(fo.read())
         v.ruta, v.archivos_manual, v.seleccion = dv, None, None
